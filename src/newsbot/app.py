@@ -76,9 +76,17 @@ async def async_main() -> None:
             ),
         )
         review = ReviewQueue(bot, config, db, publisher, deduper)
-        runtime = Runtime(config, db, pipeline, publisher, None)
+        runtime = Runtime(
+            config,
+            db,
+            pipeline,
+            publisher,
+            None,
+            config_path=settings.config_path,
+        )
+        runtime.review = review
         dispatcher = Dispatcher()
-        dispatcher.include_router(build_router(runtime))
+        dispatcher.include_router(build_router(runtime, bot))
         dispatcher.include_router(build_review_router(review))
         try:
             await bot.delete_webhook(drop_pending_updates=False)
@@ -110,6 +118,7 @@ async def async_main() -> None:
             else:
                 runtime.client = client
                 collector = Collector(client, config, db, pipeline, review)
+                runtime.collector = collector
                 await collector.start()
         except Exception as exc:
             logger.error("donor reader not started: %s", exc.__class__.__name__)

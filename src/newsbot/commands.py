@@ -3,12 +3,34 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.enums import ChatType
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
-from aiogram.types import BotCommand, KeyboardButton, Message, ReplyKeyboardMarkup
+from aiogram.types import BotCommand, CallbackQuery, KeyboardButton, Message, ReplyKeyboardMarkup
 from telethon.tl.types import MessageService
 
+from newsbot.config import ConfigError
+from newsbot.donors import (
+    DonorPrompt,
+    DonorRefError,
+    add_donor,
+    apply_donor_action,
+    button_labels,
+    confirm_delete_keyboard,
+    donors_keyboard,
+    edit_keyboard,
+    find_donor,
+    format_delete_confirm,
+    format_donor_edit,
+    format_donor_list,
+    install_config,
+    parse_donor_callback,
+    parse_donor_ref,
+    reject_donor_chat,
+    rename_donor,
+    save_donor_list,
+)
 from newsbot.pipeline import PostInput
 from newsbot.runtime import Runtime
 
@@ -55,7 +77,7 @@ def owner_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def build_router(runtime: Runtime) -> Router:
+def build_router(runtime: Runtime, bot: Bot) -> Router:
     router = Router()
     owner_id = runtime.config.owner_id
 
@@ -76,9 +98,47 @@ def build_router(runtime: Runtime) -> Router:
         await message.answer("нет доступа")
         return False
 
+    def clear_donor_prompt() -> None:
+        runtime.donor_prompt = None
+
     async def send_start(message: Message) -> None:
+        clear_donor_prompt()
         sent = await message.answer(START_TEXT, reply_markup=owner_markup(message))
         logger.info("outgoing start reply message_id=%s", sent.message_id)
+
+    async def send_donors(message: Message) -> None:
+        clear_donor_prompt()
+        markup = donors_keyboard(runtime.config.donors)
+        sent = await message.answer(format_donor_list(runtime.config.donors), reply_markup=markup)
+        logger.info(
+            "outgoing donors reply message_id=%s buttons=%s",
+            sent.message_id,
+            button_labels(markup),
+        )
+
+    async def show_donors_editor(message: Message) -> None:
+        markup = donors_keyboard(runtime.config.donors)
+        try:
+            await message.edit_text(format_donor_list(runtime.config.donors), reply_markup=markup)
+        except TelegramBadRequest as exc:
+            if "not modified" not in str(exc).lower():
+                raise
+        logger.info(
+            "outgoing donors edit message_id=%s buttons=%s",
+            message.message_id,
+            button_labels(markup),
+        )
+
+    def store_donors(donors: tuple) -> str | None:
+        if not runtime.config_path:
+            return "Не удалось записать конфиг."
+        try:
+            loaded = save_donor_list(runtime.config_path, donors)
+        except (Exception, ConfigError) as exc:
+            logger.error("donor save failed: %s", exc.__class__.__name__)
+            return "Не удалось записать конфиг."
+        install_config(runtime, loaded)
+        return None
 
     @router.message(Command("start"))
     async def start_cmd(message: Message) -> None:
@@ -98,10 +158,12 @@ def build_router(runtime: Runtime) -> Router:
             return
         markup = owner_keyboard()
         if action == "status":
+            clear_donor_prompt()
             await message.answer(_status_text(runtime), reply_markup=markup)
         elif action == "donors":
-            await message.answer(await _donors_text(runtime), reply_markup=markup)
+            await send_donors(message)
         elif action == "pause":
+            clear_donor_prompt()
             runtime.db.set_paused(True)
             logger.info("publishing paused by owner")
             await message.answer(
@@ -110,6 +172,7 @@ def build_router(runtime: Runtime) -> Router:
                 reply_markup=markup,
             )
         elif action == "resume":
+            clear_donor_prompt()
             runtime.db.set_paused(False)
             logger.info("publishing resumed by owner")
             await message.answer("Публикация продолжена.", reply_markup=markup)
@@ -118,12 +181,14 @@ def build_router(runtime: Runtime) -> Router:
     async def status_cmd(message: Message) -> None:
         if not await only_owner(message):
             return
+        clear_donor_prompt()
         await message.answer(_status_text(runtime), reply_markup=owner_keyboard())
 
     @router.message(Command("pause"))
     async def pause_cmd(message: Message) -> None:
         if not await only_owner(message):
             return
+        clear_donor_prompt()
         runtime.db.set_paused(True)
         logger.info("publishing paused by owner")
         await message.answer(
@@ -136,6 +201,7 @@ def build_router(runtime: Runtime) -> Router:
     async def resume_cmd(message: Message) -> None:
         if not await only_owner(message):
             return
+        clear_donor_prompt()
         runtime.db.set_paused(False)
         logger.info("publishing resumed by owner")
         await message.answer("Публикация продолжена.", reply_markup=owner_keyboard())
@@ -144,30 +210,158 @@ def build_router(runtime: Runtime) -> Router:
     async def donors_cmd(message: Message) -> None:
         if not await only_owner(message):
             return
-        await message.answer(await _donors_text(runtime), reply_markup=owner_keyboard())
+        await send_donors(message)
 
     @router.message(Command("preview"))
     async def preview_cmd(message: Message) -> None:
         if not await only_owner(message):
             return
+        clear_donor_prompt()
         parts = (message.text or "").split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip():
             await message.answer("Использование: /preview <username донора>")
             return
         await message.answer(await _preview(runtime, parts[1].strip()), reply_markup=owner_keyboard())
 
+    @router.callback_query(F.data.startswith("dn:"))
+    async def donor_callback(query: CallbackQuery) -> None:
+        user = query.from_user
+        if user is None or user.id != owner_id:
+            await query.answer("нет доступа")
+            return
+        parsed = parse_donor_callback(query.data)
+        if parsed is None or query.message is None:
+            await query.answer()
+            return
+        action, username = parsed
+        await query.answer()
+        if action == "add":
+            runtime.donor_prompt = DonorPrompt("add")
+            await query.message.answer(
+                "Пришлите публичный канал: @username или ссылку t.me/канал. Отмена — /donors."
+            )
+            return
+        if action == "back":
+            clear_donor_prompt()
+            await show_donors_editor(query.message)
+            return
+        if action == "ask_delete":
+            clear_donor_prompt()
+            if username is None or find_donor(runtime.config.donors, username) is None:
+                await show_donors_editor(query.message)
+                return
+            markup = confirm_delete_keyboard(username)
+            await query.message.edit_text(format_delete_confirm(username), reply_markup=markup)
+            logger.info(
+                "outgoing donors edit message_id=%s buttons=%s",
+                query.message.message_id,
+                button_labels(markup),
+            )
+            return
+        if action == "edit":
+            donor = find_donor(runtime.config.donors, username or "")
+            if donor is None:
+                clear_donor_prompt()
+                await show_donors_editor(query.message)
+                return
+            runtime.donor_prompt = DonorPrompt("rename", donor.username)
+            markup = edit_keyboard(donor)
+            await query.message.edit_text(format_donor_edit(donor), reply_markup=markup)
+            logger.info(
+                "outgoing donors edit message_id=%s buttons=%s",
+                query.message.message_id,
+                button_labels(markup),
+            )
+            return
+        updated, error = apply_donor_action(runtime.config.donors, action, username)
+        if error:
+            await query.message.answer(error)
+            await show_donors_editor(query.message)
+            return
+        stored = store_donors(updated)
+        if stored:
+            await query.message.answer(stored)
+            return
+        if action in {"enable", "disable"}:
+            donor = find_donor(runtime.config.donors, username or "")
+            if donor is None:
+                clear_donor_prompt()
+                await show_donors_editor(query.message)
+                return
+            runtime.donor_prompt = DonorPrompt("rename", donor.username)
+            markup = edit_keyboard(donor)
+            await query.message.edit_text(format_donor_edit(donor), reply_markup=markup)
+            logger.info(
+                "outgoing donors edit message_id=%s buttons=%s",
+                query.message.message_id,
+                button_labels(markup),
+            )
+            return
+        clear_donor_prompt()
+        await show_donors_editor(query.message)
+
+    @router.message(F.chat.type == ChatType.PRIVATE, F.text, _donor_prompt_open(runtime))
+    async def donor_text(message: Message) -> None:
+        prompt = runtime.donor_prompt
+        if prompt is None or not is_owner(message):
+            return
+        try:
+            username = parse_donor_ref(message.text or "")
+        except DonorRefError as exc:
+            await message.answer(str(exc))
+            return
+        rejected = await _public_channel_error(bot, username)
+        if rejected:
+            await message.answer(rejected)
+            return
+        if prompt.kind == "rename":
+            updated, error = rename_donor(runtime.config.donors, prompt.username or "", username)
+        else:
+            updated, error = add_donor(runtime.config.donors, username)
+        if error:
+            await message.answer(error)
+            return
+        stored = store_donors(updated)
+        if stored:
+            await message.answer(stored)
+            return
+        clear_donor_prompt()
+        await send_donors(message)
+
     return router
 
 
-async def _donors_text(runtime: Runtime) -> str:
-    if not runtime.config.donors:
-        return "Доноры не заданы."
-    lines = []
-    for donor in runtime.config.donors:
-        state = "включён" if donor.enabled else "выключен"
-        signature = donor.signature or runtime.config.signatures.default or "не задана"
-        lines.append(f"@{donor.username} — {state}, подпись: {signature}")
-    return "Доноры:\n" + "\n".join(lines)
+def _donor_prompt_open(runtime: Runtime):
+    def check(message: Message) -> bool:
+        prompt = runtime.donor_prompt
+        if prompt is None or message.from_user is None:
+            return False
+        if message.from_user.id != runtime.config.owner_id:
+            return False
+        if message.chat.type != ChatType.PRIVATE:
+            return False
+        text = message.text or ""
+        if text.startswith("/") or text in OWNER_BUTTONS:
+            return False
+        return True
+
+    return check
+
+
+async def _public_channel_error(bot: Bot, username: str) -> str | None:
+    try:
+        chat = await bot.get_chat(f"@{username}")
+    except TelegramBadRequest:
+        return "Не нашёл публичный канал с таким именем."
+    except Exception as exc:
+        logger.error("donor lookup failed: %s", exc.__class__.__name__)
+        return "Не удалось проверить канал."
+    chat_type = getattr(chat.type, "value", None)
+    if not isinstance(chat_type, str) or not chat_type:
+        chat_type = str(chat.type)
+    if chat_type.startswith("ChatType."):
+        chat_type = chat_type.split(".", 1)[1].casefold()
+    return reject_donor_chat(chat_type)
 
 
 def _status_text(runtime: Runtime) -> str:
