@@ -24,7 +24,6 @@ from newsbot.commands import OWNER_BUTTONS
 from newsbot.publisher import Outgoing, Publisher
 from newsbot.branches import materialize_branches
 from newsbot.review import (
-    choose_private_edit,
     match_log_reply,
     pack_callback,
     parse_callback,
@@ -39,11 +38,7 @@ from newsbot.textutil import fit_text
 
 logger = logging.getLogger(__name__)
 
-EDIT_PROMPT = (
-    "Ответьте на это сообщение новым текстом. "
-    "Кнопки «Отправить», «Редактировать» и «Отклонить» остаются. "
-    "В канал публикации оно не уйдёт, пока не нажмёте «Отправить»."
-)
+EDIT_HINT = "Ответьте на этот пост новым текстом."
 
 
 def review_keyboard(preview_id: int) -> InlineKeyboardMarkup:
@@ -166,8 +161,8 @@ class ReviewQueue:
                 await answer_callback(query, "нет доступа")
                 return
             # Stop the spinner before any database or send work. A stale query
-            # still gets the private prompt.
-            await deliver_edit_prompt(self.bot, self.config.owner_id, query, self.db, preview_id)
+            # still gets the reply under the preview. Nothing is sent in private.
+            await deliver_edit_prompt(self.bot, query, self.db, preview_id)
             return
         async with self._lock:
             preview = self.db.get_preview(preview_id)
@@ -241,25 +236,26 @@ class ReviewQueue:
             await answer_callback(query, "Отправлено")
 
     async def receive_edit(self, message: Message) -> None:
+        if message.chat.type == ChatType.PRIVATE or not self._is_log_chat(message.chat.id):
+            return
         user = message.from_user
-        if user is None or user.id != self.config.owner_id:
+        if user is not None and user.id != self.config.owner_id:
+            return
+        # A channel post has no sender. Replies from any other identified user are ignored.
+        if user is None and message.chat.type != ChatType.CHANNEL:
             return
         text = (message.text or "").strip()
         if not text or text.startswith("/") or text in OWNER_BUTTONS:
             return
-        reply_id = message.reply_to_message.message_id if message.reply_to_message else None
-        if message.chat.type != ChatType.PRIVATE and not self._is_log_chat(message.chat.id):
+        reply = message.reply_to_message
+        if reply is None:
             return
-        if message.chat.type == ChatType.PRIVATE:
-            choice = choose_private_edit(self.db.pending_edit_prompts(), reply_id)
-            if choice.ambiguous:
-                await message.answer("Ответьте на сообщение бота с номером превью.")
-                return
-            preview_id = choice.preview_id
-        else:
-            if reply_id is None:
-                return
-            preview_id = match_log_reply(self.db.pending_review_messages(), reply_id)
+        preview_id = match_log_reply(self.db.pending_review_messages(), reply.message_id)
+        if preview_id is None:
+            for candidate, prompt_id in self.db.pending_edit_prompts():
+                if prompt_id == reply.message_id:
+                    preview_id = candidate
+                    break
         if preview_id is None:
             return
         await self._apply_new_text(preview_id, text, message)
@@ -361,15 +357,27 @@ async def answer_callback(query: CallbackQuery, text: str | None = None) -> None
         logger.info("callback answer skipped")
 
 
-async def deliver_edit_prompt(bot, owner_id: int, query: CallbackQuery, db, preview_id: int) -> int:
-    """Answer Редактировать, then ask the owner for a new text. Does not publish."""
+async def deliver_edit_prompt(bot, query: CallbackQuery, db, preview_id: int) -> int | None:
+    """Answer Редактировать, then ask under that preview in the log channel. Does not publish or DM."""
     await answer_callback(query)
     preview = db.get_preview(preview_id)
-    if preview is None or preview.state != "pending":
-        sent = await bot.send_message(owner_id, "Это превью уже закрыто.")
+    if preview is None or preview.log_message_id is None:
+        logger.info("edit prompt skipped preview=%s", preview_id)
+        return None
+    chat = chat_target(preview.log_chat_id)
+    if preview.state != "pending":
+        sent = await bot.send_message(
+            chat,
+            "Это превью уже закрыто.",
+            reply_to_message_id=preview.log_message_id,
+        )
         logger.info("outgoing edit closed message_id=%s preview=%s", sent.message_id, preview_id)
         return sent.message_id
-    sent = await bot.send_message(owner_id, f"Превью {preview_id}. {EDIT_PROMPT}")
+    sent = await bot.send_message(
+        chat,
+        EDIT_HINT,
+        reply_to_message_id=preview.log_message_id,
+    )
     db.set_edit_prompt(preview_id, sent.message_id)
     logger.info("outgoing edit prompt message_id=%s preview=%s", sent.message_id, preview_id)
     return sent.message_id
@@ -385,14 +393,6 @@ def build_review_router(queue: ReviewQueue) -> Router:
     async def on_callback(query: CallbackQuery) -> None:
         await queue.on_callback(query)
 
-    @router.message(F.chat.type == ChatType.PRIVATE, F.text)
-    async def on_private_text(message: Message) -> None:
-        if message.from_user is None or message.from_user.id != owner_id:
-            return
-        if (message.text or "").startswith("/"):
-            return
-        await queue.receive_edit(message)
-
     @router.message(F.reply_to_message, F.text)
     async def on_log_reply(message: Message) -> None:
         if message.chat.type == ChatType.PRIVATE:
@@ -403,9 +403,8 @@ def build_review_router(queue: ReviewQueue) -> Router:
 
     @router.channel_post(F.reply_to_message, F.text)
     async def on_channel_reply(message: Message) -> None:
-        # A broadcast channel post usually has no from_user. Only an identifiable
-        # owner may rewrite the preview; otherwise the private prompt is the path.
-        if message.from_user is None or message.from_user.id != owner_id:
+        # Channel posts are not signed with a user id. A known other sender is ignored.
+        if message.from_user is not None and message.from_user.id != owner_id:
             return
         await queue.receive_edit(message)
 

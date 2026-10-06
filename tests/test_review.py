@@ -18,7 +18,9 @@ from newsbot.review import (
     route_callback,
     sent_status,
 )
-from newsbot.review_queue import EDIT_PROMPT, ReviewQueue, deliver_edit_prompt
+from aiogram.enums import ChatType
+
+from newsbot.review_queue import EDIT_HINT, ReviewQueue, deliver_edit_prompt
 
 
 def test_callback_data_stays_within_64_bytes():
@@ -123,34 +125,29 @@ def test_reject_from_pending(tmp_path):
     assert db.count_pending_previews() == 0
 
 
-def test_stale_edit_callback_asks_for_text_and_does_not_publish(tmp_path):
-    sent: dict[str, object] = {}
+def _edit_queue(tmp_path, config):
+    sent: list[dict[str, object]] = []
+    edited: list[dict[str, object]] = []
     published: list[object] = []
 
     class Bot:
         async def send_message(self, chat_id, text, **kwargs):
-            sent["chat_id"] = chat_id
-            sent["text"] = text
+            sent.append({"chat_id": chat_id, "text": text, **kwargs})
             return SimpleNamespace(message_id=21)
 
-    class Query:
-        def __init__(self, data: str) -> None:
-            self.data = data
-            self.from_user = SimpleNamespace(id=123456789)
+        async def edit_message_text(self, text, **kwargs):
+            edited.append({"text": text, **kwargs})
+            return SimpleNamespace(message_id=kwargs.get("message_id"))
 
-        async def answer(self, text=None, **kwargs):
-            raise TelegramBadRequest(
-                method=AnswerCallbackQuery(callback_query_id="1"),
-                message="query is too old",
-            )
+        async def edit_message_caption(self, **kwargs):
+            edited.append(kwargs)
+            return SimpleNamespace(message_id=kwargs.get("message_id"))
 
     class Publisher:
         async def publish_now(self, item, **kwargs):
             published.append(item)
             return [1]
 
-    raw = yaml.safe_load((Path(__file__).resolve().parents[1] / "config.example.yaml").read_text())
-    config = parse_config(raw)
     db = Database(tmp_path / "edit.sqlite")
     db.init()
     preview_id = db.create_preview(
@@ -160,33 +157,101 @@ def test_stale_edit_callback_asks_for_text_and_does_not_publish(tmp_path):
         text="Готовый текст",
         dedupe_text="готовый текст",
     )
-    queue = ReviewQueue(Bot(), config, db, Publisher(), SimpleNamespace())
-    message_id = asyncio.run(
-        queue.on_callback(Query(pack_callback("edit", preview_id)))
+    db.attach_preview_message(
+        preview_id,
+        log_message_id=50,
+        content_message_id=50,
+        kind="text",
     )
-    assert message_id is None
+    queue = ReviewQueue(Bot(), config, db, Publisher(), SimpleNamespace())
+    return queue, db, preview_id, sent, edited, published
+
+
+def _reply(chat_id, chat_type, user_id, text, reply_id):
+    async def answer(body):
+        return SimpleNamespace(message_id=90, text=body)
+
+    return SimpleNamespace(
+        chat=SimpleNamespace(id=chat_id, type=chat_type),
+        from_user=None if user_id is None else SimpleNamespace(id=user_id),
+        text=text,
+        reply_to_message=SimpleNamespace(message_id=reply_id),
+        answer=answer,
+    )
+
+
+def test_stale_edit_callback_replies_in_the_log_and_does_not_publish(tmp_path):
+    raw = yaml.safe_load((Path(__file__).resolve().parents[1] / "config.example.yaml").read_text())
+    config = parse_config(raw)
+    queue, db, preview_id, sent, edited, published = _edit_queue(tmp_path, config)
+
+    class Query:
+        def __init__(self, data: str) -> None:
+            self.data = data
+            self.from_user = SimpleNamespace(id=config.owner_id)
+
+        async def answer(self, text=None, **kwargs):
+            raise TelegramBadRequest(
+                method=AnswerCallbackQuery(callback_query_id="1"),
+                message="query is too old",
+            )
+
+    asyncio.run(queue.on_callback(Query(pack_callback("edit", preview_id))))
     assert published == []
-    assert sent["chat_id"] == config.owner_id
-    text = str(sent["text"])
-    assert text == f"Превью {preview_id}. {EDIT_PROMPT}"
-    assert "Ответьте" in text
-    assert "Отправить" in text
-    assert "Редактировать" in text
-    assert "Отклонить" in text
-    assert "не уйдёт" in text
+    assert edited == []
+    assert len(sent) == 1
+    assert sent[0]["chat_id"] == -1001234567890
+    assert sent[0]["chat_id"] != config.owner_id
+    assert sent[0]["text"] == EDIT_HINT
+    assert sent[0]["reply_to_message_id"] == 50
+    assert "Превью" not in str(sent[0]["text"])
     assert db.pending_edit_prompts() == [(preview_id, 21)]
     assert db.get_preview(preview_id).state == "pending"
 
-    closed = asyncio.run(deliver_edit_prompt(Bot(), config.owner_id, Query("e:1"), db, preview_id))
-    assert closed == 21
     db.transition_preview(preview_id, "rejected", expect="pending")
-    sent.clear()
-    closed_id = asyncio.run(
-        deliver_edit_prompt(Bot(), config.owner_id, Query("e:1"), db, preview_id)
-    )
+    closed_id = asyncio.run(deliver_edit_prompt(queue.bot, Query("e:1"), db, preview_id))
     assert closed_id == 21
-    assert sent["text"] == "Это превью уже закрыто."
+    assert sent[-1]["chat_id"] == -1001234567890
+    assert sent[-1]["text"] == "Это превью уже закрыто."
+    assert sent[-1]["reply_to_message_id"] == 50
     assert published == []
+
+
+def test_owner_log_reply_replaces_preview_and_keeps_buttons(tmp_path):
+    raw = yaml.safe_load((Path(__file__).resolve().parents[1] / "config.example.yaml").read_text())
+    config = parse_config(raw)
+    queue, db, preview_id, sent, edited, published = _edit_queue(tmp_path, config)
+    log_id = -1001234567890
+
+    asyncio.run(
+        queue.receive_edit(
+            _reply(log_id, ChatType.CHANNEL, None, "Новый текст поста", 50)
+        )
+    )
+    assert published == []
+    assert db.get_preview(preview_id).text == "Новый текст поста"
+    assert db.get_preview(preview_id).state == "pending"
+    assert len(edited) == 1
+    buttons = [
+        button.text
+        for row in edited[0]["reply_markup"].inline_keyboard
+        for button in row
+    ]
+    assert buttons == ["Отправить", "Редактировать", "Отклонить"]
+
+    asyncio.run(
+        queue.receive_edit(
+            _reply(log_id, ChatType.SUPERGROUP, 2, "Чужой текст", 50)
+        )
+    )
+    asyncio.run(
+        queue.receive_edit(
+            _reply(config.owner_id, ChatType.PRIVATE, config.owner_id, "Личный текст", 50)
+        )
+    )
+    assert db.get_preview(preview_id).text == "Новый текст поста"
+    assert published == []
+    assert all(item["chat_id"] != config.owner_id for item in sent)
 
 
 def test_config_allows_empty_donors_and_numeric_log_channel():
