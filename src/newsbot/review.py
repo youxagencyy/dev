@@ -62,6 +62,25 @@ def route_callback(action: str, *, actor_id: int | None, owner_id: int, state: s
     return Route("edit", "pending")
 
 
+def preview_heading(branch_name: str) -> str:
+    name = (branch_name or "").strip() or "Новости"
+    return f"Ветка: {name}"
+
+
+def preview_label(branch_name: str, text: str) -> str:
+    """Log-channel text. The stored body stays unlabeled so publish does not repeat the name."""
+    heading = preview_heading(branch_name)
+    body = (text or "").strip()
+    if not body:
+        return heading
+    return f"{heading}\n\n{body}"
+
+
+def preview_publish_channel(stored: str, fallback: str) -> str:
+    text = (stored or "").strip()
+    return text or fallback
+
+
 def sent_status(message_ids: list[int]) -> str:
     shown = ", ".join(str(item) for item in message_ids) or "—"
     return f"Отправлено → {shown}"

@@ -20,6 +20,17 @@ class Donor:
 
 
 @dataclass(frozen=True)
+class Branch:
+    """One feed: its own donors, publish channel, review channel, and footer."""
+
+    name: str
+    publish_channel: str
+    review_channel: str
+    donors: tuple[Donor, ...] = ()
+    template: str = ""
+
+
+@dataclass(frozen=True)
 class SignatureConfig:
     default: str
     templates: dict[str, str]
@@ -105,6 +116,8 @@ class Config:
     dedupe: DedupeConfig
     rate_limit: RateLimitConfig
     publish: PublishConfig
+    branches: tuple[Branch, ...] = ()
+    current_branch: str = "Новости"
 
 
 @dataclass(frozen=True)
@@ -152,7 +165,16 @@ def parse_config(data: dict) -> Config:
         signatures = SignatureConfig(default="", templates={}, channel_link="", hashtags="", channel_title="")
     else:
         signatures = _signatures(_mapping(signatures_raw, "signatures"))
-    donors = _donors(data.get("donors"), signatures)
+    branches, current_name = _branches(data, signatures)
+    if branches:
+        active = next(branch for branch in branches if branch.name == current_name)
+        channel = active.publish_channel
+        log_channel = active.review_channel
+        donors = active.donors
+    else:
+        donors = _donors(data.get("donors"), signatures)
+        branches = (Branch("Новости", channel, log_channel, donors),)
+        current_name = "Новости"
     ad_filter = _ad_filter(_mapping(data.get("ad_filter"), "ad_filter"))
     strip = _strip(_mapping(data.get("strip"), "strip"))
     links = _links(_mapping(data.get("links"), "links"))
@@ -165,6 +187,8 @@ def parse_config(data: dict) -> Config:
         log_channel=log_channel,
         owner_id=owner_id,
         donors=donors,
+        branches=branches,
+        current_branch=current_name,
         signatures=signatures,
         ad_filter=ad_filter,
         strip=strip,
@@ -228,6 +252,14 @@ def _channel(value: object, field: str) -> str:
 def _text(value: object, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"{field} должен быть непустой строкой")
+    return value.strip()
+
+
+def _optional_template(value: object, field: str) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ConfigError(f"{field} должен быть строкой")
     return value.strip()
 
 
@@ -298,6 +330,49 @@ def _signatures(data: dict) -> SignatureConfig:
     )
 
 
+def _branches(data: dict, signatures: SignatureConfig) -> tuple[tuple[Branch, ...], str]:
+    raw = data.get("branches")
+    if raw is None:
+        return (), ""
+    if not isinstance(raw, list):
+        raise ConfigError("branches должен быть списком")
+    if not raw:
+        return (), ""
+    branches: list[Branch] = []
+    seen: set[str] = set()
+    for index, item in enumerate(raw):
+        field = f"branches[{index}]"
+        mapping = _mapping(item, field)
+        name = _text(mapping.get("name"), f"{field}.name")
+        if len(name) > 40:
+            raise ConfigError(f"{field}.name длиннее 40 символов")
+        key = name.casefold()
+        if key in seen:
+            raise ConfigError(f"Ветка {name!r} указана дважды")
+        seen.add(key)
+        publish = mapping.get("publish", mapping.get("channel"))
+        review = mapping.get("review")
+        branches.append(
+            Branch(
+                name=name,
+                publish_channel=_channel(publish, f"{field}.publish"),
+                review_channel=_channel(review, f"{field}.review"),
+                donors=_donors(mapping.get("donors"), signatures),
+                template=_optional_template(mapping.get("template"), f"{field}.template"),
+            )
+        )
+    current_raw = data.get("current_branch")
+    if current_raw is None or current_raw == "":
+        return tuple(branches), branches[0].name
+    if not isinstance(current_raw, str) or not current_raw.strip():
+        raise ConfigError("current_branch должен быть названием ветки")
+    current = current_raw.strip()
+    for branch in branches:
+        if branch.name.casefold() == current.casefold():
+            return tuple(branches), branch.name
+    raise ConfigError(f"current_branch={current!r} нет среди веток")
+
+
 def _donors(value: object, signatures: SignatureConfig) -> tuple[Donor, ...]:
     if value is None:
         return ()
@@ -339,9 +414,25 @@ def _donors(value: object, signatures: SignatureConfig) -> tuple[Donor, ...]:
     return tuple(donors)
 
 
+# Always on, even when config.yaml never grew a custom ad list.
+DEFAULT_AD_KEYWORDS = (
+    "реклама",
+    "erid",
+    "промокод",
+    "партнёрский материал",
+    "партнерский материал",
+    "на правах рекламы",
+    "рекламодатель",
+    "по вопросам рекламы",
+)
+
+
 def _ad_filter(data: dict) -> AdFilterConfig:
-    keywords = tuple(fold_keyword(item) for item in _str_tuple(data.get("keywords"), "ad_filter.keywords"))
-    keywords = tuple(item for item in keywords if item)
+    configured = _str_tuple(data.get("keywords"), "ad_filter.keywords")
+    keywords = tuple(
+        fold_keyword(item) for item in (*DEFAULT_AD_KEYWORDS, *configured)
+    )
+    keywords = tuple(dict.fromkeys(item for item in keywords if item))
     return AdFilterConfig(
         keywords=keywords,
         min_hits=_int(data.get("min_hits", 1), "ad_filter.min_hits", minimum=1),

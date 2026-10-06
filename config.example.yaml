@@ -2,6 +2,8 @@
 # Бот перепубликует очищенные новости в канал, которым вы владеете.
 # В donors только публичные каналы. Личные чаты и группы не добавляйте.
 
+# Несколько лент: branches (name, publish, review, donors) и current_branch.
+# Если branches нет, target, log и donors становятся веткой «Новости».
 target:
   channel: "@your_news"
 

@@ -63,8 +63,9 @@ def test_cleans_links_strips_footer_and_appends_signature(tmp_path):
     )
     result = asyncio.run(pipeline.run(_post(text), record=True))
     assert result.action == "publish"
-    assert "https://new.news/a?id=7" in result.text
+    assert "old.news" not in result.text
     assert "utm_" not in result.text
+    assert "http" not in result.text.split("Новости")[0]
     assert "Подписывайтесь" not in result.text
     assert result.text.endswith("Новости\n#новости\nhttps://t.me/your_news")
     assert rewriter.calls == 0
@@ -90,6 +91,37 @@ def test_llm_failure_falls_back_to_cleaned_text(tmp_path):
     assert result.text.startswith("Событие без рекламы")
     assert "[ред.]" not in result.text
     assert db.recent_errors(1)[0].context == "rewrite"
+
+
+def test_donor_signature_is_not_kept_and_branch_footer_is(tmp_path):
+    pipeline, _db = _pipeline(tmp_path, FakeRewriter(active=False))
+    named = asyncio.run(pipeline.run(_post("Событие без рекламы", signature_template="short"), record=True))
+    assert "Коротко" not in named.text
+    assert named.text.endswith("https://t.me/your_news")
+    custom = asyncio.run(
+        pipeline.run(
+            _post(
+                "Другое событие без рекламы https://donor.example/a\n@donor_channel",
+                message_id=2,
+                footer="Наш канал\nhttps://t.me/your_news",
+            ),
+            record=True,
+        )
+    )
+    assert custom.action == "publish"
+    assert "donor.example" not in custom.text
+    assert "@donor_channel" not in custom.text
+    assert custom.text.endswith("Наш канал\nhttps://t.me/your_news")
+    assert "Новости\n#новости" not in custom.text
+
+
+def test_empty_body_after_cleaning_is_skipped(tmp_path):
+    pipeline, _db = _pipeline(tmp_path, FakeRewriter(active=False))
+    result = asyncio.run(
+        pipeline.run(_post("https://t.me/donor_news\nПодписывайтесь"), record=True)
+    )
+    assert result.action == "skip"
+    assert result.reason == "empty_after_clean"
 
 
 def test_inactive_rewriter_is_not_called(tmp_path):

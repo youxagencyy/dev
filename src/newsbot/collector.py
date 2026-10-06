@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from telethon import TelegramClient, events, utils
 from telethon.tl.types import MessageService
 
+from newsbot.branches import materialize_branches
 from newsbot.config import Config, Donor
 from newsbot.db import Database
 from newsbot.pipeline import Pipeline, PostInput
@@ -23,6 +24,9 @@ class Piece:
     photo: bytes | None
     grouped_id: int | None
     signature_template: str | None
+    branch: str = "Новости"
+    publish_channel: str = ""
+    review_channel: str = ""
 
 
 class Collector:
@@ -41,32 +45,48 @@ class Collector:
         self.db = db
         self.pipeline = pipeline
         self.review = review
-        self._by_peer: dict[int, Donor] = {}
-        self._albums: dict[tuple[str, int], list[Piece]] = {}
-        self._tasks: dict[tuple[str, int], asyncio.Task[None]] = {}
+        self._by_peer: dict[int, list[tuple[str, Donor, str, str]]] = {}
+        self._albums: dict[tuple[str, str, int], list[Piece]] = {}
+        self._tasks: dict[tuple[str, str, int], asyncio.Task[None]] = {}
         self._listening = False
 
+    async def reload(self) -> None:
+        """Subscribe to the donors of every branch after a config change."""
+        if self._listening:
+            self.client.remove_event_handler(self._on_message)
+            self._listening = False
+        await self.start()
+
     async def start(self) -> None:
+        self._by_peer.clear()
+        entities: dict[str, object] = {}
         chats = []
-        for donor in self.config.donors:
-            if not donor.enabled:
-                continue
-            try:
-                entity = await self.client.get_entity(donor.username)
-            except Exception as exc:
-                message = f"@{donor.username}: {exc.__class__.__name__}"
-                logger.error("donor resolve failed: %s", message)
-                self.db.add_error("donor", message)
-                continue
-            if not getattr(entity, "broadcast", False):
-                message = f"@{donor.username}: не канал, пропуск"
-                logger.error(message)
-                self.db.add_error("donor", message)
-                continue
-            peer_id = utils.get_peer_id(entity)
-            self._by_peer[peer_id] = donor
-            chats.append(entity)
-            logger.info("donor ready @%s", donor.username)
+        for branch in materialize_branches(self.config):
+            for donor in branch.donors:
+                if not donor.enabled:
+                    continue
+                key = donor.username.casefold()
+                entity = entities.get(key)
+                if entity is None:
+                    try:
+                        entity = await self.client.get_entity(donor.username)
+                    except Exception as exc:
+                        message = f"@{donor.username}: {exc.__class__.__name__}"
+                        logger.error("donor resolve failed: %s", message)
+                        self.db.add_error("donor", message)
+                        continue
+                    if not getattr(entity, "broadcast", False):
+                        message = f"@{donor.username}: не канал, пропуск"
+                        logger.error(message)
+                        self.db.add_error("donor", message)
+                        continue
+                    entities[key] = entity
+                    chats.append(entity)
+                    logger.info("donor ready @%s", donor.username)
+                peer_id = utils.get_peer_id(entity)
+                self._by_peer.setdefault(peer_id, []).append(
+                    (branch.name, donor, branch.publish_channel, branch.review_channel)
+                )
         if not chats:
             logger.warning("нет доступных каналов-доноров, чтение не запущено")
             return
@@ -90,39 +110,46 @@ class Collector:
             self.db.add_error("collector", exc.__class__.__name__)
 
     async def _handle(self, event: events.NewMessage.Event) -> None:
-        donor = self._by_peer.get(event.chat_id)
-        if donor is None:
+        bindings = self._by_peer.get(event.chat_id) or []
+        if not bindings:
             return
         message = event.message
-        if self.db.is_paused():
-            self.db.mark_seen(donor.username, message.id)
-            logger.info("paused, skip @%s #%s", donor.username, message.id)
-            return
-        if not self.db.mark_seen(donor.username, message.id):
-            return
-        if isinstance(message, MessageService) or getattr(message, "action", None):
-            self.db.log_publish(
+        photo: bytes | None | object = ...
+        for branch_name, donor, publish_channel, review_channel in bindings:
+            seen_key = f"{branch_name}:{donor.username}"
+            if self.db.is_paused():
+                self.db.mark_seen(seen_key, message.id)
+                logger.info("paused, skip @%s #%s", donor.username, message.id)
+                continue
+            if not self.db.mark_seen(seen_key, message.id):
+                continue
+            if isinstance(message, MessageService) or getattr(message, "action", None):
+                self.db.log_publish(
+                    donor=donor.username,
+                    source_message_ids=[message.id],
+                    target_message_ids=None,
+                    fingerprint="",
+                    status="skip",
+                    reason="service",
+                )
+                continue
+            if photo is ...:
+                photo = await self._download_photo(donor.username, message)
+            piece = Piece(
                 donor=donor.username,
-                source_message_ids=[message.id],
-                target_message_ids=None,
-                fingerprint="",
-                status="skip",
-                reason="service",
+                message_id=message.id,
+                text=message.message or "",
+                photo=photo if isinstance(photo, bytes) else None,
+                grouped_id=message.grouped_id,
+                signature_template=donor.signature,
+                branch=branch_name,
+                publish_channel=publish_channel,
+                review_channel=review_channel,
             )
-            return
-        photo = await self._download_photo(donor.username, message)
-        piece = Piece(
-            donor=donor.username,
-            message_id=message.id,
-            text=message.message or "",
-            photo=photo,
-            grouped_id=message.grouped_id,
-            signature_template=donor.signature,
-        )
-        if message.grouped_id:
-            await self._buffer(piece)
-            return
-        await self._process([piece])
+            if message.grouped_id:
+                await self._buffer(piece)
+                continue
+            await self._process([piece])
 
     async def _download_photo(self, donor: str, message: object) -> bytes | None:
         if not getattr(message, "photo", None):
@@ -138,12 +165,12 @@ class Collector:
 
     async def _buffer(self, piece: Piece) -> None:
         assert piece.grouped_id is not None
-        key = (piece.donor, piece.grouped_id)
+        key = (piece.branch, piece.donor, piece.grouped_id)
         self._albums.setdefault(key, []).append(piece)
         if key not in self._tasks:
             self._tasks[key] = asyncio.create_task(self._flush(key))
 
-    async def _flush(self, key: tuple[str, int]) -> None:
+    async def _flush(self, key: tuple[str, str, int]) -> None:
         try:
             await asyncio.sleep(self.config.publish.album_flush_seconds)
             pieces = self._albums.pop(key, [])
@@ -169,7 +196,7 @@ class Collector:
                 text=primary.text,
                 is_service=False,
                 has_photo=bool(photos),
-                signature_template=primary.signature_template,
+                footer=self._footer(primary.branch),
             ),
             record=False,
         )
@@ -196,6 +223,9 @@ class Collector:
             text=result.text,
             photos=[blob for blob in photos if blob is not None],
             dedupe_text=result.dedupe_text,
+            branch_name=primary.branch,
+            publish_channel=primary.publish_channel,
+            review_channel=primary.review_channel,
         )
         if preview_id is None:
             return
@@ -207,3 +237,9 @@ class Collector:
             status="review",
             reason=f"preview {preview_id}",
         )
+
+    def _footer(self, branch_name: str) -> str:
+        for branch in materialize_branches(self.config):
+            if branch.name == branch_name:
+                return branch.template
+        return ""

@@ -49,6 +49,8 @@ class Preview:
     edit_prompt_message_id: int | None
     created_at: str
     updated_at: str
+    branch_name: str = ""
+    target_channel: str = ""
 
 
 @dataclass(frozen=True)
@@ -134,7 +136,15 @@ class Database:
                 );
                 """
             )
+            self._add_column("previews", "branch_name", "TEXT NOT NULL DEFAULT ''")
+            self._add_column("previews", "target_channel", "TEXT NOT NULL DEFAULT ''")
             self._conn.commit()
+
+    def _add_column(self, table: str, column: str, definition: str) -> None:
+        rows = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        names = {row[1] for row in rows}
+        if column not in names:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def close(self) -> None:
         with self._lock:
@@ -297,6 +307,8 @@ class Database:
         log_chat_id: str,
         text: str,
         dedupe_text: str,
+        branch_name: str = "",
+        target_channel: str = "",
         now: datetime | None = None,
     ) -> int:
         moment = iso(now or utcnow())
@@ -306,10 +318,20 @@ class Database:
                 """
                 INSERT INTO previews(
                     donor, source_message_ids, log_chat_id, text, dedupe_text,
-                    state, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+                    state, created_at, updated_at, branch_name, target_channel
+                ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
                 """,
-                (donor, sources, log_chat_id, text, dedupe_text, moment, moment),
+                (
+                    donor,
+                    sources,
+                    log_chat_id,
+                    text,
+                    dedupe_text,
+                    moment,
+                    moment,
+                    branch_name,
+                    target_channel,
+                ),
             )
             self._conn.commit()
             return int(cursor.lastrowid)
@@ -455,6 +477,19 @@ class Database:
             for row in rows
         ]
 
+    def backfill_preview_channels(self, branch_name: str, target_channel: str) -> None:
+        """Old previews belong to the feed that existed before branches."""
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE previews
+                SET branch_name = ?, target_channel = ?
+                WHERE branch_name = '' AND target_channel = ''
+                """,
+                (branch_name, target_channel),
+            )
+            self._conn.commit()
+
     def count_pending_previews(self) -> int:
         with self._lock:
             row = self._conn.execute(
@@ -481,4 +516,6 @@ def _preview_from_row(row: sqlite3.Row) -> Preview:
         ),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        branch_name=row["branch_name"] if "branch_name" in row.keys() else "",
+        target_channel=row["target_channel"] if "target_channel" in row.keys() else "",
     )

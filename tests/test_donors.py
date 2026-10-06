@@ -115,7 +115,17 @@ def test_list_shows_state_and_per_donor_buttons():
     assert text == "@alpha_news — включён\n@beta_news — выключен"
     markup = donors_keyboard(donors)
     labels = [button.text for row in markup.inline_keyboard for button in row]
-    assert labels == ["Добавить", "Удалить", "Редактировать", "Удалить", "Редактировать"]
+    assert labels == [
+        "Добавить",
+        "Удалить @alpha_news",
+        "Редактировать @alpha_news",
+        "Удалить @beta_news",
+        "Редактировать @beta_news",
+    ]
+    assert [button.text for button in markup.inline_keyboard[1]] == [
+        "Удалить @alpha_news",
+        "Редактировать @alpha_news",
+    ]
     for row in markup.inline_keyboard:
         for button in row:
             assert button.callback_data is not None

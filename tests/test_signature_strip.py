@@ -32,3 +32,15 @@ def test_marker_is_case_insensitive():
 def test_body_without_markers_stays():
     text = "Коротко: заседание перенесли на пятницу."
     assert strip_donor_marks(text, _config()) == text
+
+
+def test_builtin_footer_is_removed_without_yaml_patterns():
+    empty = StripConfig(patterns=(), trailing_markers=())
+    text = "Новость дня в городе.\n\nПідпишись на канал\n@truexanewsua\nhttps://t.me/truexanewsua"
+    assert strip_donor_marks(text, empty) == "Новость дня в городе."
+
+
+def test_builtin_mention_line_does_not_eat_the_next_paragraph():
+    empty = StripConfig(patterns=(), trailing_markers=())
+    text = "Главное событие дня.\nИсточник: РИА\n@donor_channel\nДальше по делу."
+    assert strip_donor_marks(text, empty) == "Главное событие дня.\nДальше по делу."

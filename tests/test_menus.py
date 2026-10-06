@@ -4,7 +4,16 @@ from newsbot.commands import BUTTON_ACTIONS, OWNER_BUTTONS, START_TEXT, bot_comm
 def test_command_menu_is_russian_and_includes_start():
     commands = bot_commands()
     names = [item.command for item in commands]
-    assert names[:6] == ["start", "status", "donors", "pause", "resume", "help"]
+    assert names[:8] == [
+        "start",
+        "status",
+        "donors",
+        "branches",
+        "template",
+        "pause",
+        "resume",
+        "help",
+    ]
     assert all(item.description for item in commands)
     assert "Бот на связи" in commands[0].description
 

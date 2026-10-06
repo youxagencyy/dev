@@ -8,6 +8,7 @@ import httpx
 from aiogram import Bot, Dispatcher
 from telethon import TelegramClient
 
+from newsbot.branches import materialize_branches
 from newsbot.collector import Collector
 from newsbot.commands import bot_commands, build_router
 from newsbot.config import load_config, load_settings
@@ -40,6 +41,7 @@ async def async_main() -> None:
     config = load_config(settings.config_path)
     db = Database(settings.database_path)
     db.init()
+    db.backfill_preview_channels(config.current_branch, config.target_channel)
     http = httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0))
     bot: Bot | None = None
     client: TelegramClient | None = None
@@ -126,7 +128,12 @@ async def async_main() -> None:
                 await client.disconnect()
                 client = None
             runtime.client = None
-        enabled = [donor.username for donor in config.donors if donor.enabled]
+        enabled = [
+            donor.username
+            for branch in materialize_branches(config)
+            for donor in branch.donors
+            if donor.enabled
+        ]
         logger.info("newsbot ready donors=%s", ",".join(enabled) or "-")
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()

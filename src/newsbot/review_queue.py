@@ -22,11 +22,15 @@ from newsbot.db import Database
 from newsbot.dedupe import Deduper
 from newsbot.commands import OWNER_BUTTONS
 from newsbot.publisher import Outgoing, Publisher
+from newsbot.branches import materialize_branches
 from newsbot.review import (
     choose_private_edit,
     match_log_reply,
     pack_callback,
     parse_callback,
+    preview_heading,
+    preview_label,
+    preview_publish_channel,
     rejected_status,
     route_callback,
     sent_status,
@@ -72,22 +76,31 @@ class ReviewQueue:
         text: str,
         photos: list[bytes],
         dedupe_text: str,
+        branch_name: str = "",
+        publish_channel: str = "",
+        review_channel: str = "",
     ) -> int | None:
-        """Put one cleaned post in the log channel. Nothing is sent to the target yet."""
+        """Put one cleaned post in that branch's review channel. Nothing is published yet."""
+        branch = branch_name or self.config.current_branch or "Новости"
+        target = publish_channel or self.config.target_channel
+        review = review_channel or self.config.log_channel
+        shown = preview_label(branch, text)
         preview_id = self.db.create_preview(
             donor=donor,
             source_message_ids=source_ids,
-            log_chat_id=self.config.log_channel,
+            log_chat_id=review,
             text=text,
             dedupe_text=dedupe_text,
+            branch_name=branch,
+            target_channel=target,
         )
         if photos:
             self.db.save_preview_media(preview_id, photos)
-        chat = chat_target(self.config.log_channel)
+        chat = chat_target(review)
         markup = review_keyboard(preview_id)
         try:
             if not photos:
-                sent = await self.bot.send_message(chat, text, reply_markup=markup)
+                sent = await self.bot.send_message(chat, shown, reply_markup=markup)
                 self.db.attach_preview_message(
                     preview_id,
                     log_message_id=sent.message_id,
@@ -98,7 +111,7 @@ class ReviewQueue:
                 sent = await self.bot.send_photo(
                     chat,
                     BufferedInputFile(photos[0], filename="photo.jpg"),
-                    caption=text or None,
+                    caption=shown or None,
                     reply_markup=markup,
                 )
                 self.db.attach_preview_message(
@@ -111,12 +124,16 @@ class ReviewQueue:
                 media = [
                     InputMediaPhoto(
                         media=BufferedInputFile(blob, filename=f"photo-{index}.jpg"),
-                        caption=text if index == 0 and text else None,
+                        caption=shown if index == 0 and shown else None,
                     )
                     for index, blob in enumerate(photos[: self.config.publish.album_max_items])
                 ]
                 group = await self.bot.send_media_group(chat, media)
-                control = await self.bot.send_message(chat, "Проверка альбома", reply_markup=markup)
+                control = await self.bot.send_message(
+                    chat,
+                    f"{preview_heading(branch)}\nПроверка альбома",
+                    reply_markup=markup,
+                )
                 self.db.attach_preview_message(
                     preview_id,
                     log_message_id=control.message_id,
@@ -170,6 +187,7 @@ class ReviewQueue:
                 return
             photos = self.db.preview_media(preview_id)
             source_ids = [int(item) for item in preview.source_message_ids.split(",") if item]
+            channel = preview_publish_channel(preview.target_channel, self.config.target_channel)
             try:
                 target_ids = await self.publisher.publish_now(
                     Outgoing(
@@ -178,7 +196,8 @@ class ReviewQueue:
                         text=preview.text,
                         photos=photos,
                         fingerprint="",
-                    )
+                    ),
+                    channel=channel,
                 )
             except Exception as exc:
                 logger.exception("approved publish failed preview=%s", preview_id)
@@ -239,7 +258,7 @@ class ReviewQueue:
         prompt = await self.bot.send_message(
             self.config.owner_id,
             "Ответьте на это сообщение новым текстом превью "
-            f"{preview_id}. В канал новостей оно не уйдёт, пока не нажмёте «Отправить».",
+            f"{preview_id}. В канал публикации оно не уйдёт, пока не нажмёте «Отправить».",
         )
         self.db.set_edit_prompt(preview_id, prompt.message_id)
 
@@ -269,19 +288,20 @@ class ReviewQueue:
                 await message.answer("Текст сохранён, но сообщение в канале проверки не обновилось.")
                 return
             self.db.clear_edit_prompt(preview_id)
-            await message.answer("Текст обновлён. Кнопки на месте, в канал новостей ещё не отправлено.")
+            await message.answer("Текст обновлён. Кнопки на месте, в канал публикации ещё не отправлено.")
 
     async def _replace_body(self, preview, text: str, *, keep_buttons: bool) -> None:
         chat = chat_target(preview.log_chat_id)
+        shown = preview_label(preview.branch_name, text)
         markup = review_keyboard(preview.id) if keep_buttons else _cleared_keyboard()
         if preview.kind == "text" and preview.log_message_id is not None:
-            await self._edit_text(chat, preview.log_message_id, text, markup)
+            await self._edit_text(chat, preview.log_message_id, shown, markup)
             return
         if preview.kind == "photo" and preview.log_message_id is not None:
-            await self._edit_caption(chat, preview.log_message_id, text, markup)
+            await self._edit_caption(chat, preview.log_message_id, shown, markup)
             return
         if preview.content_message_id is not None:
-            await self._edit_caption(chat, preview.content_message_id, text, None)
+            await self._edit_caption(chat, preview.content_message_id, shown, None)
 
     async def _show_status(self, preview, status: str) -> None:
         chat = chat_target(preview.log_chat_id)
@@ -295,7 +315,7 @@ class ReviewQueue:
                 if preview.kind == "text"
                 else self.config.publish.caption_limit
             )
-            body = fit_text(f"{preview.text.rstrip()}\n\n{status}", limit)
+            body = fit_text(f"{preview_label(preview.branch_name, preview.text).rstrip()}\n\n{status}", limit)
             if preview.kind == "photo" and preview.log_message_id is not None:
                 await self._edit_caption(chat, preview.log_message_id, body, cleared)
             elif preview.log_message_id is not None:
@@ -323,14 +343,19 @@ class ReviewQueue:
                 raise
 
     def _is_log_chat(self, chat_id: int) -> bool:
-        return chat_id == chat_target(self.config.log_channel)
+        for branch in materialize_branches(self.config):
+            if chat_id == chat_target(branch.review_channel):
+                return True
+        return False
 
 
 def build_review_router(queue: ReviewQueue) -> Router:
     router = Router()
     owner_id = queue.config.owner_id
 
-    @router.callback_query()
+    @router.callback_query(
+        ~F.data.startswith("dn:") & ~F.data.startswith("br:") & ~F.data.startswith("tm:")
+    )
     async def on_callback(query: CallbackQuery) -> None:
         await queue.on_callback(query)
 

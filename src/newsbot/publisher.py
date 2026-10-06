@@ -38,10 +38,10 @@ class Publisher:
     async def enqueue(self, item: Outgoing) -> None:
         await self.queue.put(item)
 
-    async def publish_now(self, item: Outgoing) -> list[int]:
+    async def publish_now(self, item: Outgoing, *, channel: str | None = None) -> list[int]:
         """Publish one approved preview. The review lock is the only caller."""
         await self.limiter.wait()
-        return await self._send_with_retry(item)
+        return await self._send_with_retry(item, channel=channel)
 
     async def worker(self) -> None:
         while True:
@@ -74,7 +74,7 @@ class Publisher:
         while self.db.is_paused():
             await asyncio.sleep(0.5)
         await self.limiter.wait()
-        target_ids = await self._send_with_retry(item)
+        target_ids = await self._send_with_retry(item, channel=None)
         self.db.log_publish(
             donor=item.donor,
             source_message_ids=item.source_ids,
@@ -89,12 +89,12 @@ class Publisher:
             ",".join(str(item_id) for item_id in target_ids),
         )
 
-    async def _send_with_retry(self, item: Outgoing) -> list[int]:
+    async def _send_with_retry(self, item: Outgoing, *, channel: str | None = None) -> list[int]:
         delay = 2.0
         last_error: Exception | None = None
         for attempt in range(3):
             try:
-                return await self._send(item)
+                return await self._send(item, channel=channel)
             except TelegramRetryAfter as exc:
                 last_error = exc
                 await asyncio.sleep(exc.retry_after + 1)
@@ -108,8 +108,8 @@ class Publisher:
             raise last_error
         raise RuntimeError("publish failed")
 
-    async def _send(self, item: Outgoing) -> list[int]:
-        chat = chat_target(self.config.target_channel)
+    async def _send(self, item: Outgoing, *, channel: str | None = None) -> list[int]:
+        chat = chat_target(channel or self.config.target_channel)
         photos = item.photos[: self.config.publish.album_max_items]
         caption = item.text or None
         if not photos:

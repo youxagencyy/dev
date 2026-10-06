@@ -8,9 +8,9 @@ from newsbot.ad_filter import is_advertisement
 from newsbot.config import Config
 from newsbot.db import Database
 from newsbot.dedupe import Deduper, fingerprint
-from newsbot.links import rewrite_links
+from newsbot.links import strip_urls
 from newsbot.rewrite import RewriteClient
-from newsbot.signatures import append_signature, strip_donor_marks
+from newsbot.signatures import append_footer, append_signature, strip_donor_marks
 from newsbot.textutil import fit_text, normalize_for_fingerprint, prepare_text
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,7 @@ class PostInput:
     is_service: bool
     has_photo: bool
     signature_template: str | None = None
+    footer: str | None = None
 
 
 @dataclass(frozen=True)
@@ -100,7 +101,12 @@ class Pipeline:
                 if post.has_photo
                 else self.config.publish.message_limit
             )
-            text = append_signature(body, self.config.signatures, post.signature_template)
+            if post.footer is None:
+                # Named per-donor templates are ignored: only the branch footer
+                # or, when the caller did not set one, the global signature.
+                text = append_signature(body, self.config.signatures, None)
+            else:
+                text = append_footer(body, post.footer)
             text = fit_text(text, limit)
             return PipelineResult("publish", "", text, digest, cleaned)
 
@@ -114,10 +120,10 @@ class Pipeline:
         if rejected:
             return PipelineResult("skip", reason, "", "")
         cleaned = strip_donor_marks(raw, self.config.strip)
-        cleaned = rewrite_links(cleaned, self.config.links)
+        cleaned = strip_urls(cleaned)
         if post.has_photo and not self.config.rewrite.keep_media_captions:
             cleaned = ""
-        if not cleaned.strip() and not post.has_photo:
+        if not cleaned.strip():
             return PipelineResult("skip", "empty_after_clean", "", "")
         return cleaned
 

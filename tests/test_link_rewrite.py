@@ -1,5 +1,5 @@
 from newsbot.config import LinkConfig
-from newsbot.links import rewrite_links
+from newsbot.links import rewrite_links, strip_urls
 
 
 def _config() -> LinkConfig:
@@ -36,6 +36,15 @@ def test_keeps_fragment_and_balanced_parentheses():
     config = LinkConfig(strip_params=frozenset(), domain_rewrite={}, blacklist_domains=frozenset())
     text = "Статья https://ru.wikipedia.org/wiki/Москва_(город)#История."
     assert rewrite_links(text, config) == text
+
+
+def test_strip_urls_removes_every_link_and_tme_mention():
+    text = "Смотрите https://old.news/a?utm_source=tg&id=7 и t.me/donor_news."
+    result = strip_urls(text)
+    assert "http" not in result
+    assert "t.me" not in result
+    assert "utm_" not in result
+    assert result.startswith("Смотрите")
 
 
 def test_text_without_urls_is_unchanged():

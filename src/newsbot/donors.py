@@ -48,6 +48,8 @@ class DonorRefError(ValueError):
 class DonorPrompt:
     kind: str
     username: str | None = None
+    branch_name: str | None = None
+    publish_channel: str | None = None
 
 
 def parse_donor_ref(raw: str) -> str:
@@ -155,11 +157,11 @@ def donors_keyboard(donors: tuple[Donor, ...]) -> InlineKeyboardMarkup:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text="Удалить",
+                    text=f"Удалить @{donor.username}",
                     callback_data=pack_donor_callback("ask_delete", donor.username),
                 ),
                 InlineKeyboardButton(
-                    text="Редактировать",
+                    text=f"Редактировать @{donor.username}",
                     callback_data=pack_donor_callback("edit", donor.username),
                 ),
             ]
@@ -292,15 +294,13 @@ def donor_mapping(donor: Donor) -> dict[str, object]:
     return item
 
 
-def save_donor_list(path: str | Path, donors: tuple[Donor, ...]) -> Config:
-    """Replace only the ``donors`` key and return the config reloaded from disk."""
+def commit_config(path: str | Path, data: dict) -> Config:
+    """Atomically replace a config file and reload it. Restores the previous text on failure."""
     target = Path(path)
     original = target.read_text(encoding="utf-8")
     mode = target.stat().st_mode
-    data = yaml.safe_load(original) or {}
     if not isinstance(data, dict):
         raise ConfigError("Корень config.yaml должен быть словарём")
-    data["donors"] = [donor_mapping(donor) for donor in donors]
     rendered = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
     temporary = target.with_name(target.name + ".tmp")
     try:
@@ -314,6 +314,23 @@ def save_donor_list(path: str | Path, donors: tuple[Donor, ...]) -> Config:
         target.write_text(original, encoding="utf-8")
         os.chmod(target, mode)
         raise
+
+
+def save_donor_list(path: str | Path, donors: tuple[Donor, ...]) -> Config:
+    """Replace donors of the current branch and return the config reloaded from disk."""
+    target = Path(path)
+    data = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise ConfigError("Корень config.yaml должен быть словарём")
+    mapped = [donor_mapping(donor) for donor in donors]
+    data["donors"] = mapped
+    current = data.get("current_branch") or "Новости"
+    branches = data.get("branches")
+    if isinstance(branches, list) and isinstance(current, str):
+        for branch in branches:
+            if isinstance(branch, dict) and str(branch.get("name", "")).casefold() == current.casefold():
+                branch["donors"] = mapped
+    return commit_config(target, data)
 
 
 def install_config(runtime: Any, config: Config) -> None:

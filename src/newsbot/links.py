@@ -9,6 +9,25 @@ from newsbot.textutil import URL_RE
 TRAILING = ".,;:!?)]}>\"'"
 
 
+_BARE_TME = re.compile(
+    r"(?<![\w/])(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/[A-Za-z0-9_+/\-]+",
+    re.IGNORECASE,
+)
+
+
+def strip_urls(text: str) -> str:
+    """Remove every URL and t.me mention. The branch template is appended later."""
+    if not text:
+        return ""
+    cleaned = URL_RE.sub("", text)
+    cleaned = _BARE_TME.sub("", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r" +([.,;:!?])", r"\1", cleaned)
+    cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def rewrite_links(text: str, config: LinkConfig) -> str:
     """Normalize URLs inside plain text.
 

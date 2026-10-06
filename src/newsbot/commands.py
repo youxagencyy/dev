@@ -10,7 +10,25 @@ from aiogram.filters import Command
 from aiogram.types import BotCommand, CallbackQuery, KeyboardButton, Message, ReplyKeyboardMarkup
 from telethon.tl.types import MessageService
 
-from newsbot.config import ConfigError
+from newsbot.branches import (
+    BranchNameError,
+    DestinationError,
+    add_branch,
+    branches_keyboard,
+    current_branch,
+    format_branch_list,
+    format_current_donors,
+    format_template,
+    parse_branch_callback,
+    parse_branch_name,
+    parse_destination,
+    save_branches,
+    select_branch,
+    set_branch_channel,
+    set_branch_template,
+    template_keyboard,
+)
+from newsbot.config import ConfigError, chat_target
 from newsbot.donors import (
     DonorPrompt,
     DonorRefError,
@@ -23,7 +41,6 @@ from newsbot.donors import (
     find_donor,
     format_delete_confirm,
     format_donor_edit,
-    format_donor_list,
     install_config,
     parse_donor_callback,
     parse_donor_ref,
@@ -38,15 +55,45 @@ logger = logging.getLogger(__name__)
 
 START_TEXT = (
     "Бот на связи. "
-    "В канале проверки: «Отправить» публикует пост в канал новостей, "
-    "«Редактировать» меняет текст, «Отклонить» убирает его."
+    "В канале проверки: «Отправить» публикует пост в канал этой ветки, "
+    "«Редактировать» меняет текст, «Отклонить» убирает его. "
+    "«Ветки» переключает ленты."
 )
 
-OWNER_BUTTONS = ("Статус", "Доноры", "Пауза", "Продолжить", "Помощь")
+ADD_DONOR_PROMPT = (
+    "Пришлите публичный канал: @username или ссылку t.me/канал. Отмена — /donors."
+)
+PUBLISH_PROMPT = (
+    "Куда публиковать новости? Пришлите @username или числовой id канала. Отмена — /branches."
+)
+REVIEW_PROMPT = (
+    "Канал проверки (логи)? Пришлите @username или числовой id канала. "
+    "Сюда попадут текст и кнопки «Отправить», «Редактировать», «Отклонить». "
+    "Отмена — /branches."
+)
+BRANCH_NAME_PROMPT = "Название новой ветки? Например: Крипто. Отмена — /branches."
+BRANCH_PUBLISH_PROMPT = (
+    "Куда публиковать новости этой ветки? Пришлите @username или числовой id канала. "
+    "Отмена — /branches."
+)
+BRANCH_REVIEW_PROMPT = (
+    "Канал проверки (логи) для этой ветки? Пришлите @username или числовой id. "
+    "Можно тот же канал, что у другой ветки. Отмена — /branches."
+)
+
+TEMPLATE_PROMPT = (
+    "Пришлите новый шаблон для этой ветки. Он добавится в конец очищенного поста, "
+    "подпись донора туда не попадает. Ссылку на свой канал можно оставить в шаблоне. "
+    "Пустое сообщение убирает шаблон. Отмена — /template."
+)
+
+OWNER_BUTTONS = ("Статус", "Доноры", "Ветки", "Шаблон", "Пауза", "Продолжить", "Помощь")
 
 BUTTON_ACTIONS = {
     "Статус": "status",
     "Доноры": "donors",
+    "Ветки": "branches",
+    "Шаблон": "template",
     "Пауза": "pause",
     "Продолжить": "resume",
     "Помощь": "help",
@@ -58,6 +105,8 @@ def bot_commands() -> list[BotCommand]:
         BotCommand(command="start", description="Бот на связи"),
         BotCommand(command="status", description="Состояние и ошибки"),
         BotCommand(command="donors", description="Список доноров"),
+        BotCommand(command="branches", description="Ветки и каналы"),
+        BotCommand(command="template", description="Шаблон этой ветки"),
         BotCommand(command="pause", description="Не брать новые посты"),
         BotCommand(command="resume", description="Снова брать посты"),
         BotCommand(command="help", description="Что делают кнопки"),
@@ -69,6 +118,7 @@ def owner_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="Статус"), KeyboardButton(text="Доноры")],
+            [KeyboardButton(text="Ветки"), KeyboardButton(text="Шаблон")],
             [KeyboardButton(text="Пауза"), KeyboardButton(text="Продолжить")],
             [KeyboardButton(text="Помощь")],
         ],
@@ -109,7 +159,7 @@ def build_router(runtime: Runtime, bot: Bot) -> Router:
     async def send_donors(message: Message) -> None:
         clear_donor_prompt()
         markup = donors_keyboard(runtime.config.donors)
-        sent = await message.answer(format_donor_list(runtime.config.donors), reply_markup=markup)
+        sent = await message.answer(format_current_donors(runtime.config), reply_markup=markup)
         logger.info(
             "outgoing donors reply message_id=%s buttons=%s",
             sent.message_id,
@@ -119,7 +169,7 @@ def build_router(runtime: Runtime, bot: Bot) -> Router:
     async def show_donors_editor(message: Message) -> None:
         markup = donors_keyboard(runtime.config.donors)
         try:
-            await message.edit_text(format_donor_list(runtime.config.donors), reply_markup=markup)
+            await message.edit_text(format_current_donors(runtime.config), reply_markup=markup)
         except TelegramBadRequest as exc:
             if "not modified" not in str(exc).lower():
                 raise
@@ -129,13 +179,69 @@ def build_router(runtime: Runtime, bot: Bot) -> Router:
             button_labels(markup),
         )
 
-    def store_donors(donors: tuple) -> str | None:
+    async def store_donors(donors: tuple) -> str | None:
         if not runtime.config_path:
             return "Не удалось записать конфиг."
         try:
             loaded = save_donor_list(runtime.config_path, donors)
         except (Exception, ConfigError) as exc:
             logger.error("donor save failed: %s", exc.__class__.__name__)
+            return "Не удалось записать конфиг."
+        install_config(runtime, loaded)
+        await _refresh_donors(runtime)
+        return None
+
+    async def send_template(message: Message) -> None:
+        clear_donor_prompt()
+        markup = template_keyboard()
+        sent = await message.answer(format_template(runtime.config), reply_markup=markup)
+        logger.info(
+            "outgoing template reply message_id=%s buttons=%s",
+            sent.message_id,
+            button_labels(markup),
+        )
+
+    async def save_template(message: Message, text: str) -> None:
+        updated = set_branch_template(runtime.config, text)
+        failed = store_branches(updated)
+        if failed:
+            await message.answer(failed)
+            return
+        clear_donor_prompt()
+        note = "Шаблон очищен." if not text.strip() else "Шаблон записан."
+        await message.answer(note)
+        await send_template(message)
+
+    async def send_branches(message: Message) -> None:
+        clear_donor_prompt()
+        markup = branches_keyboard(runtime.config)
+        sent = await message.answer(format_branch_list(runtime.config), reply_markup=markup)
+        logger.info(
+            "outgoing branches reply message_id=%s buttons=%s",
+            sent.message_id,
+            button_labels(markup),
+        )
+
+    async def show_branches_editor(message: Message) -> None:
+        markup = branches_keyboard(runtime.config)
+        try:
+            await message.edit_text(format_branch_list(runtime.config), reply_markup=markup)
+        except TelegramBadRequest as exc:
+            if "not modified" not in str(exc).lower():
+                raise
+        logger.info(
+            "outgoing branches edit message_id=%s buttons=%s",
+            message.message_id,
+            button_labels(markup),
+        )
+
+    def store_branches(config) -> str | None:
+        if not runtime.config_path:
+            return "Не удалось записать конфиг."
+        try:
+            loaded = save_branches(runtime.config_path, config)
+        except (Exception, ConfigError) as exc:
+            logger.error("branch save failed: %s", exc.__class__.__name__)
             return "Не удалось записать конфиг."
         install_config(runtime, loaded)
         return None
@@ -162,6 +268,10 @@ def build_router(runtime: Runtime, bot: Bot) -> Router:
             await message.answer(_status_text(runtime), reply_markup=markup)
         elif action == "donors":
             await send_donors(message)
+        elif action == "branches":
+            await send_branches(message)
+        elif action == "template":
+            await send_template(message)
         elif action == "pause":
             clear_donor_prompt()
             runtime.db.set_paused(True)
@@ -212,6 +322,18 @@ def build_router(runtime: Runtime, bot: Bot) -> Router:
             return
         await send_donors(message)
 
+    @router.message(Command("branches"))
+    async def branches_cmd(message: Message) -> None:
+        if not await only_owner(message):
+            return
+        await send_branches(message)
+
+    @router.message(Command("template"))
+    async def template_cmd(message: Message) -> None:
+        if not await only_owner(message):
+            return
+        await send_template(message)
+
     @router.message(Command("preview"))
     async def preview_cmd(message: Message) -> None:
         if not await only_owner(message):
@@ -227,20 +349,20 @@ def build_router(runtime: Runtime, bot: Bot) -> Router:
     async def donor_callback(query: CallbackQuery) -> None:
         user = query.from_user
         if user is None or user.id != owner_id:
-            await query.answer("нет доступа")
+            await _answer_callback(query, "нет доступа")
             return
         parsed = parse_donor_callback(query.data)
-        if parsed is None or query.message is None:
-            await query.answer()
+        if parsed is None:
+            await _answer_callback(query)
             return
         action, username = parsed
-        await query.answer()
         if action == "add":
-            runtime.donor_prompt = DonorPrompt("add")
-            await query.message.answer(
-                "Пришлите публичный канал: @username или ссылку t.me/канал. Отмена — /donors."
-            )
+            await deliver_add_prompt(bot, owner_id, query, runtime)
             return
+        if query.message is None:
+            await _answer_callback(query)
+            return
+        await _answer_callback(query)
         if action == "back":
             clear_donor_prompt()
             await show_donors_editor(query.message)
@@ -278,7 +400,7 @@ def build_router(runtime: Runtime, bot: Bot) -> Router:
             await query.message.answer(error)
             await show_donors_editor(query.message)
             return
-        stored = store_donors(updated)
+        stored = await store_donors(updated)
         if stored:
             await query.message.answer(stored)
             return
@@ -300,10 +422,95 @@ def build_router(runtime: Runtime, bot: Bot) -> Router:
         clear_donor_prompt()
         await show_donors_editor(query.message)
 
+    @router.callback_query(F.data.startswith("tm:"))
+    async def template_callback(query: CallbackQuery) -> None:
+        user = query.from_user
+        if user is None or user.id != owner_id:
+            await _answer_callback(query, "нет доступа")
+            return
+        await _answer_callback(query)
+        if query.data == "tm:c":
+            updated = set_branch_template(runtime.config, "")
+            failed = store_branches(updated)
+            if failed:
+                await bot.send_message(owner_id, failed)
+                return
+            clear_donor_prompt()
+            sent = await bot.send_message(owner_id, "Шаблон очищен.")
+            logger.info("outgoing template cleared message_id=%s", sent.message_id)
+            if query.message is not None:
+                try:
+                    await query.message.edit_text(
+                        format_template(runtime.config),
+                        reply_markup=template_keyboard(),
+                    )
+                except TelegramBadRequest as exc:
+                    if "not modified" not in str(exc).lower():
+                        raise
+            return
+        if query.data == "tm:e":
+            runtime.donor_prompt = DonorPrompt("set_template")
+            sent = await bot.send_message(owner_id, TEMPLATE_PROMPT)
+            logger.info("outgoing template prompt message_id=%s", sent.message_id)
+            return
+        await bot.send_message(owner_id, "Не понял действие.")
+
+    @router.callback_query(F.data.startswith("br:"))
+    async def branch_callback(query: CallbackQuery) -> None:
+        user = query.from_user
+        if user is None or user.id != owner_id:
+            await _answer_callback(query, "нет доступа")
+            return
+        parsed = parse_branch_callback(query.data)
+        if parsed is None:
+            await _answer_callback(query)
+            return
+        action, index = parsed
+        await _answer_callback(query)
+        if action == "add":
+            runtime.donor_prompt = DonorPrompt("branch_name")
+            sent = await bot.send_message(owner_id, BRANCH_NAME_PROMPT)
+            logger.info("outgoing branch prompt message_id=%s kind=name", sent.message_id)
+            return
+        if action == "publish":
+            runtime.donor_prompt = DonorPrompt("set_publish")
+            sent = await bot.send_message(owner_id, PUBLISH_PROMPT)
+            logger.info("outgoing branch prompt message_id=%s kind=publish", sent.message_id)
+            return
+        if action == "review":
+            runtime.donor_prompt = DonorPrompt("set_review")
+            sent = await bot.send_message(owner_id, REVIEW_PROMPT)
+            logger.info("outgoing branch prompt message_id=%s kind=review", sent.message_id)
+            return
+        updated, error = select_branch(runtime.config, -1 if index is None else index)
+        if error:
+            await bot.send_message(owner_id, error)
+            return
+        stored = store_branches(updated)
+        if stored:
+            await bot.send_message(owner_id, stored)
+            return
+        if query.message is not None:
+            await show_branches_editor(query.message)
+            return
+        markup = branches_keyboard(runtime.config)
+        sent = await bot.send_message(owner_id, format_branch_list(runtime.config), reply_markup=markup)
+        logger.info(
+            "outgoing branches reply message_id=%s buttons=%s",
+            sent.message_id,
+            button_labels(markup),
+        )
+
     @router.message(F.chat.type == ChatType.PRIVATE, F.text, _donor_prompt_open(runtime))
     async def donor_text(message: Message) -> None:
         prompt = runtime.donor_prompt
         if prompt is None or not is_owner(message):
+            return
+        if prompt.kind == "set_template":
+            await save_template(message, message.text or "")
+            return
+        if prompt.kind in {"branch_name", "branch_publish", "branch_review", "set_publish", "set_review"}:
+            await _branch_text(message, prompt)
             return
         try:
             username = parse_donor_ref(message.text or "")
@@ -321,14 +528,127 @@ def build_router(runtime: Runtime, bot: Bot) -> Router:
         if error:
             await message.answer(error)
             return
-        stored = store_donors(updated)
+        stored = await store_donors(updated)
         if stored:
             await message.answer(stored)
             return
         clear_donor_prompt()
         await send_donors(message)
 
+    async def _branch_text(message: Message, prompt: DonorPrompt) -> None:
+        if prompt.kind == "branch_name":
+            try:
+                name = parse_branch_name(message.text or "")
+            except BranchNameError as exc:
+                await message.answer(str(exc))
+                return
+            runtime.donor_prompt = DonorPrompt("branch_publish", branch_name=name)
+            await message.answer(BRANCH_PUBLISH_PROMPT)
+            return
+        resolved = await _resolve_channel(bot, message.text or "")
+        if isinstance(resolved, str):
+            await message.answer(resolved)
+            return
+        stored, display = resolved
+        if prompt.kind == "branch_publish":
+            runtime.donor_prompt = DonorPrompt(
+                "branch_review",
+                branch_name=prompt.branch_name,
+                publish_channel=stored,
+            )
+            await message.answer(BRANCH_REVIEW_PROMPT)
+            return
+        if prompt.kind == "branch_review":
+            updated, error = add_branch(
+                runtime.config,
+                prompt.branch_name or "",
+                prompt.publish_channel or "",
+                stored,
+            )
+            if error:
+                await message.answer(error)
+                return
+            failed = store_branches(updated)
+            if failed:
+                await message.answer(failed)
+                return
+            clear_donor_prompt()
+            await message.answer(f"Ветка «{updated.current_branch}» записана. Канал проверки: {display}.")
+            await send_branches(message)
+            return
+        kind = "publish" if prompt.kind == "set_publish" else "review"
+        updated = set_branch_channel(runtime.config, kind, stored)
+        failed = store_branches(updated)
+        if failed:
+            await message.answer(failed)
+            return
+        clear_donor_prompt()
+        title = "Куда публиковать" if kind == "publish" else "Канал проверки"
+        await message.answer(f"{title}: {display}.")
+        await send_branches(message)
+
     return router
+
+
+async def deliver_add_prompt(bot: Bot, owner_id: int, query: CallbackQuery, runtime: Runtime) -> int:
+    """Answer Добавить, then ask for a public channel even if the callback is already stale."""
+    await _answer_callback(query)
+    runtime.donor_prompt = DonorPrompt("add")
+    sent = await bot.send_message(owner_id, ADD_DONOR_PROMPT)
+    logger.info("outgoing add prompt message_id=%s", sent.message_id)
+    return sent.message_id
+
+
+async def _answer_callback(query: CallbackQuery, text: str | None = None) -> None:
+    try:
+        if text:
+            await query.answer(text)
+        else:
+            await query.answer()
+    except TelegramBadRequest:
+        logger.info("callback answer skipped")
+
+
+async def _refresh_donors(runtime: Runtime) -> None:
+    collector = getattr(runtime, "collector", None)
+    if collector is None:
+        return
+    try:
+        await collector.reload()
+    except Exception as exc:
+        logger.error("donor reload failed: %s", exc.__class__.__name__)
+
+
+async def _resolve_channel(bot: Bot, raw: str) -> tuple[str, str] | str:
+    """Return ``(numeric id, label shown to the owner)`` or a Russian error."""
+    try:
+        parsed = parse_destination(raw)
+    except DestinationError as exc:
+        return str(exc)
+    try:
+        chat = await bot.get_chat(chat_target(parsed))
+    except TelegramBadRequest:
+        return "Не нашёл канал. Бот должен быть в нём администратором."
+    except Exception as exc:
+        logger.error("channel lookup failed: %s", exc.__class__.__name__)
+        return "Не удалось проверить канал."
+    rejected = reject_donor_chat(_chat_type(chat))
+    if rejected:
+        return rejected
+    stored = str(chat.id)
+    username = getattr(chat, "username", None)
+    display = f"@{username}" if username else stored
+    return stored, display
+
+
+def _chat_type(chat: object) -> str:
+    raw = getattr(chat, "type", "")
+    chat_type = getattr(raw, "value", None)
+    if not isinstance(chat_type, str) or not chat_type:
+        chat_type = str(raw)
+    if chat_type.startswith("ChatType."):
+        chat_type = chat_type.split(".", 1)[1]
+    return chat_type.casefold()
 
 
 def _donor_prompt_open(runtime: Runtime):
@@ -356,12 +676,7 @@ async def _public_channel_error(bot: Bot, username: str) -> str | None:
     except Exception as exc:
         logger.error("donor lookup failed: %s", exc.__class__.__name__)
         return "Не удалось проверить канал."
-    chat_type = getattr(chat.type, "value", None)
-    if not isinstance(chat_type, str) or not chat_type:
-        chat_type = str(chat.type)
-    if chat_type.startswith("ChatType."):
-        chat_type = chat_type.split(".", 1)[1].casefold()
-    return reject_donor_chat(chat_type)
+    return reject_donor_chat(_chat_type(chat))
 
 
 def _status_text(runtime: Runtime) -> str:
@@ -369,7 +684,9 @@ def _status_text(runtime: Runtime) -> str:
     enabled = sum(1 for donor in donors if donor.enabled)
     lines = [
         f"Состояние: {'пауза' if runtime.db.is_paused() else 'работает'}",
-        f"Цель: {runtime.config.target_channel}",
+        f"Ветка: {runtime.config.current_branch}",
+        f"Куда публиковать: {runtime.config.target_channel}",
+        f"Канал проверки: {runtime.config.log_channel}",
         f"Доноры: {len(donors)} (включено {enabled})",
         f"На проверке: {runtime.db.count_pending_previews()}",
         "Последние ошибки:",
@@ -444,7 +761,7 @@ async def _preview(runtime: Runtime, raw_username: str) -> str:
             text=text,
             is_service=is_service,
             has_photo=has_photo,
-            signature_template=donor.signature,
+            footer=current_branch(runtime.config).template,
         ),
         record=False,
     )
