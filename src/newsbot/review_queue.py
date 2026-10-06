@@ -39,6 +39,12 @@ from newsbot.textutil import fit_text
 
 logger = logging.getLogger(__name__)
 
+EDIT_PROMPT = (
+    "Ответьте на это сообщение новым текстом. "
+    "Кнопки «Отправить», «Редактировать» и «Отклонить» остаются. "
+    "В канал публикации оно не уйдёт, пока не нажмёте «Отправить»."
+)
+
 
 def review_keyboard(preview_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -152,13 +158,21 @@ class ReviewQueue:
         actor_id = query.from_user.id if query.from_user else None
         parsed = parse_callback(query.data)
         if parsed is None:
-            await query.answer()
+            await answer_callback(query)
             return
         action, preview_id = parsed
+        if action == "edit":
+            if actor_id != self.config.owner_id:
+                await answer_callback(query, "нет доступа")
+                return
+            # Stop the spinner before any database or send work. A stale query
+            # still gets the private prompt.
+            await deliver_edit_prompt(self.bot, self.config.owner_id, query, self.db, preview_id)
+            return
         async with self._lock:
             preview = self.db.get_preview(preview_id)
             if preview is None:
-                await query.answer()
+                await answer_callback(query)
                 return
             decision = route_callback(
                 action,
@@ -167,23 +181,19 @@ class ReviewQueue:
                 state=preview.state,
             )
             if decision.effect == "ignore":
-                await query.answer()
+                await answer_callback(query)
                 return
             if decision.effect == "stale":
-                await query.answer("Уже обработано")
-                return
-            if decision.effect == "edit":
-                await self._ask_for_edit(preview_id)
-                await query.answer("Жду новый текст в личке")
+                await answer_callback(query, "Уже обработано")
                 return
             if decision.effect == "reject":
                 if not self.db.transition_preview(preview_id, "rejected", expect="pending"):
-                    await query.answer("Уже обработано")
+                    await answer_callback(query, "Уже обработано")
                     return
                 fresh = self.db.get_preview(preview_id)
                 if fresh is not None:
                     await self._show_status(fresh, rejected_status())
-                await query.answer("Отклонено")
+                await answer_callback(query, "Отклонено")
                 return
             photos = self.db.preview_media(preview_id)
             source_ids = [int(item) for item in preview.source_message_ids.split(",") if item]
@@ -202,7 +212,7 @@ class ReviewQueue:
             except Exception as exc:
                 logger.exception("approved publish failed preview=%s", preview_id)
                 self.db.add_error("publish", exc.__class__.__name__)
-                await query.answer("Не удалось отправить")
+                await answer_callback(query, "Не удалось отправить")
                 return
             if not self.db.transition_preview(
                 preview_id,
@@ -210,7 +220,7 @@ class ReviewQueue:
                 expect="pending",
                 target_message_ids=target_ids,
             ):
-                await query.answer("Уже обработано")
+                await answer_callback(query, "Уже обработано")
                 return
             if preview.dedupe_text.strip():
                 self.deduper.remember(
@@ -228,7 +238,7 @@ class ReviewQueue:
             fresh = self.db.get_preview(preview_id)
             if fresh is not None:
                 await self._show_status(fresh, sent_status(target_ids))
-            await query.answer("Отправлено")
+            await answer_callback(query, "Отправлено")
 
     async def receive_edit(self, message: Message) -> None:
         user = message.from_user
@@ -253,14 +263,6 @@ class ReviewQueue:
         if preview_id is None:
             return
         await self._apply_new_text(preview_id, text, message)
-
-    async def _ask_for_edit(self, preview_id: int) -> None:
-        prompt = await self.bot.send_message(
-            self.config.owner_id,
-            "Ответьте на это сообщение новым текстом превью "
-            f"{preview_id}. В канал публикации оно не уйдёт, пока не нажмёте «Отправить».",
-        )
-        self.db.set_edit_prompt(preview_id, prompt.message_id)
 
     async def _apply_new_text(self, preview_id: int, text: str, message: Message) -> None:
         async with self._lock:
@@ -347,6 +349,30 @@ class ReviewQueue:
             if chat_id == chat_target(branch.review_channel):
                 return True
         return False
+
+
+async def answer_callback(query: CallbackQuery, text: str | None = None) -> None:
+    try:
+        if text:
+            await query.answer(text)
+        else:
+            await query.answer()
+    except TelegramBadRequest:
+        logger.info("callback answer skipped")
+
+
+async def deliver_edit_prompt(bot, owner_id: int, query: CallbackQuery, db, preview_id: int) -> int:
+    """Answer Редактировать, then ask the owner for a new text. Does not publish."""
+    await answer_callback(query)
+    preview = db.get_preview(preview_id)
+    if preview is None or preview.state != "pending":
+        sent = await bot.send_message(owner_id, "Это превью уже закрыто.")
+        logger.info("outgoing edit closed message_id=%s preview=%s", sent.message_id, preview_id)
+        return sent.message_id
+    sent = await bot.send_message(owner_id, f"Превью {preview_id}. {EDIT_PROMPT}")
+    db.set_edit_prompt(preview_id, sent.message_id)
+    logger.info("outgoing edit prompt message_id=%s preview=%s", sent.message_id, preview_id)
+    return sent.message_id
 
 
 def build_review_router(queue: ReviewQueue) -> Router:

@@ -1,4 +1,11 @@
+import asyncio
+from pathlib import Path
+from types import SimpleNamespace
+
 import pytest
+import yaml
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.methods import AnswerCallbackQuery
 
 from newsbot.config import parse_config
 from newsbot.db import Database
@@ -11,8 +18,7 @@ from newsbot.review import (
     route_callback,
     sent_status,
 )
-import yaml
-from pathlib import Path
+from newsbot.review_queue import EDIT_PROMPT, ReviewQueue, deliver_edit_prompt
 
 
 def test_callback_data_stays_within_64_bytes():
@@ -115,6 +121,72 @@ def test_reject_from_pending(tmp_path):
     assert db.transition_preview(preview_id, "rejected", expect="pending")
     assert db.get_preview(preview_id).state == "rejected"
     assert db.count_pending_previews() == 0
+
+
+def test_stale_edit_callback_asks_for_text_and_does_not_publish(tmp_path):
+    sent: dict[str, object] = {}
+    published: list[object] = []
+
+    class Bot:
+        async def send_message(self, chat_id, text, **kwargs):
+            sent["chat_id"] = chat_id
+            sent["text"] = text
+            return SimpleNamespace(message_id=21)
+
+    class Query:
+        def __init__(self, data: str) -> None:
+            self.data = data
+            self.from_user = SimpleNamespace(id=123456789)
+
+        async def answer(self, text=None, **kwargs):
+            raise TelegramBadRequest(
+                method=AnswerCallbackQuery(callback_query_id="1"),
+                message="query is too old",
+            )
+
+    class Publisher:
+        async def publish_now(self, item, **kwargs):
+            published.append(item)
+            return [1]
+
+    raw = yaml.safe_load((Path(__file__).resolve().parents[1] / "config.example.yaml").read_text())
+    config = parse_config(raw)
+    db = Database(tmp_path / "edit.sqlite")
+    db.init()
+    preview_id = db.create_preview(
+        donor="sample",
+        source_message_ids=[3],
+        log_chat_id="-1001234567890",
+        text="Готовый текст",
+        dedupe_text="готовый текст",
+    )
+    queue = ReviewQueue(Bot(), config, db, Publisher(), SimpleNamespace())
+    message_id = asyncio.run(
+        queue.on_callback(Query(pack_callback("edit", preview_id)))
+    )
+    assert message_id is None
+    assert published == []
+    assert sent["chat_id"] == config.owner_id
+    text = str(sent["text"])
+    assert text == f"Превью {preview_id}. {EDIT_PROMPT}"
+    assert "Ответьте" in text
+    assert "Отправить" in text
+    assert "Редактировать" in text
+    assert "Отклонить" in text
+    assert "не уйдёт" in text
+    assert db.pending_edit_prompts() == [(preview_id, 21)]
+    assert db.get_preview(preview_id).state == "pending"
+
+    closed = asyncio.run(deliver_edit_prompt(Bot(), config.owner_id, Query("e:1"), db, preview_id))
+    assert closed == 21
+    db.transition_preview(preview_id, "rejected", expect="pending")
+    sent.clear()
+    closed_id = asyncio.run(
+        deliver_edit_prompt(Bot(), config.owner_id, Query("e:1"), db, preview_id)
+    )
+    assert closed_id == 21
+    assert sent["text"] == "Это превью уже закрыто."
+    assert published == []
 
 
 def test_config_allows_empty_donors_and_numeric_log_channel():
