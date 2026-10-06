@@ -1,0 +1,108 @@
+# Скопируйте в config.yaml и заполните. config.yaml не коммитится.
+# Бот перепубликует очищенные новости в канал, которым вы владеете.
+# В donors только публичные каналы. Личные чаты и группы не добавляйте.
+
+target:
+  channel: "@your_news"
+
+# Числовой Telegram user id владельца. Команды принимает только он, только в личке.
+owner_id: 123456789
+
+donors:
+  - username: sample_donor
+    enabled: true
+  - username: another_donor
+    enabled: false
+    signature: short
+
+signatures:
+  default: channel
+  channel_title: "Новости"
+  channel_link: "https://t.me/your_news"
+  hashtags: "#новости"
+  templates:
+    channel: |
+      {channel}
+      {hashtags}
+      {channel_link}
+    short: "{channel_link}"
+
+# Эвристика рекламы, без скрытых весов. Пост — реклама, если выполняется любое:
+# 1) число вхождений фраз из keywords >= min_hits (без учёта регистра, ё=е, подстрока);
+# 2) http(s)-ссылок больше, чем max_external_links;
+# 3) сработал любой regex.
+# Фраза «реклама» отсечёт и новость про рекламу. Поднимите min_hits или уберите слово.
+ad_filter:
+  min_hits: 1
+  max_external_links: 4
+  keywords:
+    - "реклама"
+    - "erid"
+    - "промокод"
+    - "партнёрский материал"
+    - "партнерский материал"
+    - "на правах рекламы"
+    - "рекламодатель"
+    - "по вопросам рекламы"
+  regex:
+    - '(?i)\berid\s*[:=]'
+
+# patterns вырезаются из текста. trailing_markers: строка с маркером и всё ниже неё
+# считаются хвостовым промоблоком. Маркер в середине новости тоже отрежет хвост.
+strip:
+  patterns:
+    - '(?im)^\s*источник\s*[:—-].*(?:\n|$)'
+    - '(?im)^\s*@[A-Za-z0-9_]{3,}\s*(?:\n|$)'
+    - '(?im)^\s*https?://t\.me/[A-Za-z0-9_]+/?\s*(?:\n|$)'
+  trailing_markers:
+    - "подписывайтесь"
+    - "подпишитесь"
+    - "подписаться на канал"
+    - "наш телеграм"
+
+links:
+  # Параметры utm_* удаляются всегда, плюс этот список.
+  strip_params:
+    - utm_source
+    - utm_medium
+    - utm_campaign
+    - utm_content
+    - utm_term
+    - fbclid
+    - gclid
+    - yclid
+    - ysclid
+    - _openstat
+  domain_rewrite:
+    old-cdn.example: cdn.example
+  blacklist_domains:
+    - ads.example
+    - tracker.example
+
+rewrite:
+  enabled: true
+  tone: "нейтральный новостной"
+  max_length: 900
+  keep_media_captions: true
+  temperature: 0.2
+  system_prompt: |
+    Ты редактор новостного Telegram-канала. Перепиши текст по-русски.
+    Сохрани факты, цифры, имена, даты и цитаты. Ничего не выдумывай и не добавляй.
+    Не добавляй ссылки, которых не было. Существующие ссылки сохрани.
+    Убери рекламу, призывы подписаться и чужие подписи, если они остались.
+    Пиши кратко и нейтрально. Верни только готовый текст, без пояснений.
+
+dedupe:
+  window_hours: 24
+  similarity_threshold: 0.72
+  min_tokens: 6
+
+rate_limit:
+  min_interval_seconds: 3
+  max_posts_per_hour: 30
+
+publish:
+  album_flush_seconds: 1.5
+  album_max_items: 10
+  caption_limit: 1024
+  message_limit: 4096
