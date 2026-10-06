@@ -34,6 +34,24 @@ class ErrorRow:
 
 
 @dataclass(frozen=True)
+class Preview:
+    id: int
+    donor: str
+    source_message_ids: str
+    log_chat_id: str
+    log_message_id: int | None
+    content_message_id: int | None
+    kind: str
+    text: str
+    dedupe_text: str
+    state: str
+    target_message_ids: str | None
+    edit_prompt_message_id: int | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
 class PublishRow:
     created_at: str
     donor: str
@@ -90,6 +108,29 @@ class Database:
                 CREATE TABLE IF NOT EXISTS runtime (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS previews (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    donor TEXT NOT NULL,
+                    source_message_ids TEXT NOT NULL,
+                    log_chat_id TEXT NOT NULL,
+                    log_message_id INTEGER,
+                    content_message_id INTEGER,
+                    kind TEXT NOT NULL DEFAULT 'text',
+                    text TEXT NOT NULL,
+                    dedupe_text TEXT NOT NULL DEFAULT '',
+                    state TEXT NOT NULL,
+                    target_message_ids TEXT,
+                    edit_prompt_message_id INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_previews_state ON previews(state);
+                CREATE TABLE IF NOT EXISTS preview_media (
+                    preview_id INTEGER NOT NULL,
+                    position INTEGER NOT NULL,
+                    data BLOB NOT NULL,
+                    PRIMARY KEY (preview_id, position)
                 );
                 """
             )
@@ -247,3 +288,197 @@ class Database:
                 (limit,),
             ).fetchall()
         return [ErrorRow(row["created_at"], row["context"], row["message"]) for row in rows]
+
+    def create_preview(
+        self,
+        *,
+        donor: str,
+        source_message_ids: list[int],
+        log_chat_id: str,
+        text: str,
+        dedupe_text: str,
+        now: datetime | None = None,
+    ) -> int:
+        moment = iso(now or utcnow())
+        sources = ",".join(str(item) for item in source_message_ids)
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO previews(
+                    donor, source_message_ids, log_chat_id, text, dedupe_text,
+                    state, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+                """,
+                (donor, sources, log_chat_id, text, dedupe_text, moment, moment),
+            )
+            self._conn.commit()
+            return int(cursor.lastrowid)
+
+    def attach_preview_message(
+        self,
+        preview_id: int,
+        *,
+        log_message_id: int,
+        content_message_id: int,
+        kind: str,
+    ) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE previews
+                SET log_message_id = ?, content_message_id = ?, kind = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (log_message_id, content_message_id, kind, iso(utcnow()), preview_id),
+            )
+            self._conn.commit()
+
+    def save_preview_media(self, preview_id: int, blobs: list[bytes]) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM preview_media WHERE preview_id = ?", (preview_id,))
+            self._conn.executemany(
+                "INSERT INTO preview_media(preview_id, position, data) VALUES (?, ?, ?)",
+                [(preview_id, index, blob) for index, blob in enumerate(blobs)],
+            )
+            self._conn.commit()
+
+    def preview_media(self, preview_id: int) -> list[bytes]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT data FROM preview_media
+                WHERE preview_id = ?
+                ORDER BY position ASC
+                """,
+                (preview_id,),
+            ).fetchall()
+        return [bytes(row["data"]) for row in rows]
+
+    def get_preview(self, preview_id: int) -> Preview | None:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM previews WHERE id = ?", (preview_id,)).fetchone()
+        if row is None:
+            return None
+        return _preview_from_row(row)
+
+    def replace_preview_text(self, preview_id: int, text: str) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE previews
+                SET text = ?, updated_at = ?
+                WHERE id = ? AND state = 'pending'
+                """,
+                (text, iso(utcnow()), preview_id),
+            )
+            self._conn.commit()
+            return cursor.rowcount == 1
+
+    def transition_preview(
+        self,
+        preview_id: int,
+        new_state: str,
+        *,
+        expect: str,
+        target_message_ids: list[int] | None = None,
+    ) -> bool:
+        if new_state not in {"pending", "sent", "rejected"}:
+            raise ValueError(new_state)
+        targets = None
+        if target_message_ids is not None:
+            targets = ",".join(str(item) for item in target_message_ids)
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE previews
+                SET state = ?, target_message_ids = COALESCE(?, target_message_ids), updated_at = ?
+                WHERE id = ? AND state = ?
+                """,
+                (new_state, targets, iso(utcnow()), preview_id, expect),
+            )
+            self._conn.commit()
+            return cursor.rowcount == 1
+
+    def set_edit_prompt(self, preview_id: int, message_id: int) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE previews
+                SET edit_prompt_message_id = ?, updated_at = ?
+                WHERE id = ? AND state = 'pending'
+                """,
+                (message_id, iso(utcnow()), preview_id),
+            )
+            self._conn.commit()
+            return cursor.rowcount == 1
+
+    def clear_edit_prompt(self, preview_id: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE previews
+                SET edit_prompt_message_id = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (iso(utcnow()), preview_id),
+            )
+            self._conn.commit()
+
+    def pending_edit_prompts(self) -> list[tuple[int, int | None]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, edit_prompt_message_id
+                FROM previews
+                WHERE state = 'pending' AND edit_prompt_message_id IS NOT NULL
+                ORDER BY id ASC
+                """
+            ).fetchall()
+        return [(int(row["id"]), int(row["edit_prompt_message_id"])) for row in rows]
+
+    def pending_review_messages(self) -> list[tuple[int, int | None, int | None]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, log_message_id, content_message_id
+                FROM previews
+                WHERE state = 'pending'
+                ORDER BY id ASC
+                """
+            ).fetchall()
+        return [
+            (
+                int(row["id"]),
+                int(row["log_message_id"]) if row["log_message_id"] is not None else None,
+                int(row["content_message_id"]) if row["content_message_id"] is not None else None,
+            )
+            for row in rows
+        ]
+
+    def count_pending_previews(self) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM previews WHERE state = 'pending'"
+            ).fetchone()
+        return int(row["n"])
+
+
+def _preview_from_row(row: sqlite3.Row) -> Preview:
+    return Preview(
+        id=int(row["id"]),
+        donor=row["donor"],
+        source_message_ids=row["source_message_ids"],
+        log_chat_id=row["log_chat_id"],
+        log_message_id=int(row["log_message_id"]) if row["log_message_id"] is not None else None,
+        content_message_id=int(row["content_message_id"]) if row["content_message_id"] is not None else None,
+        kind=row["kind"],
+        text=row["text"],
+        dedupe_text=row["dedupe_text"],
+        state=row["state"],
+        target_message_ids=row["target_message_ids"],
+        edit_prompt_message_id=(
+            int(row["edit_prompt_message_id"]) if row["edit_prompt_message_id"] is not None else None
+        ),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )

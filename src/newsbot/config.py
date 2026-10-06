@@ -94,6 +94,7 @@ class PublishConfig:
 @dataclass(frozen=True)
 class Config:
     target_channel: str
+    log_channel: str
     owner_id: int
     donors: tuple[Donor, ...]
     signatures: SignatureConfig
@@ -139,12 +140,18 @@ def load_config(path: str | Path | None = None) -> Config:
 
 def parse_config(data: dict) -> Config:
     target = _mapping(data.get("target"), "target")
-    channel = _text(target.get("channel"), "target.channel")
+    channel = _channel(target.get("channel"), "target.channel")
+    log = _mapping(data.get("log"), "log")
+    log_channel = _channel(log.get("channel"), "log.channel")
     owner_id = data.get("owner_id")
     if isinstance(owner_id, bool) or not isinstance(owner_id, int) or owner_id <= 0:
         raise ConfigError("owner_id должен быть положительным числом Telegram user id")
 
-    signatures = _signatures(_mapping(data.get("signatures"), "signatures"))
+    signatures_raw = data.get("signatures")
+    if signatures_raw is None:
+        signatures = SignatureConfig(default="", templates={}, channel_link="", hashtags="", channel_title="")
+    else:
+        signatures = _signatures(_mapping(signatures_raw, "signatures"))
     donors = _donors(data.get("donors"), signatures)
     ad_filter = _ad_filter(_mapping(data.get("ad_filter"), "ad_filter"))
     strip = _strip(_mapping(data.get("strip"), "strip"))
@@ -155,6 +162,7 @@ def parse_config(data: dict) -> Config:
     publish = _publish(_mapping(data.get("publish") or {}, "publish"))
     return Config(
         target_channel=channel,
+        log_channel=log_channel,
         owner_id=owner_id,
         donors=donors,
         signatures=signatures,
@@ -205,6 +213,16 @@ def _mapping(value: object, field: str) -> dict:
     if not isinstance(value, dict):
         raise ConfigError(f"{field} должен быть словарём")
     return value
+
+
+def _channel(value: object, field: str) -> str:
+    if isinstance(value, bool):
+        raise ConfigError(f"{field} должен быть id канала или @username")
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    raise ConfigError(f"{field} должен быть id канала или @username")
 
 
 def _text(value: object, field: str) -> str:
@@ -281,8 +299,12 @@ def _signatures(data: dict) -> SignatureConfig:
 
 
 def _donors(value: object, signatures: SignatureConfig) -> tuple[Donor, ...]:
-    if not isinstance(value, list) or not value:
-        raise ConfigError("donors должен быть непустым списком")
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ConfigError("donors должен быть списком")
+    if not value:
+        return ()
     donors: list[Donor] = []
     seen: set[str] = set()
     for index, item in enumerate(value):

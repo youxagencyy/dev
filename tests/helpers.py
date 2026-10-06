@@ -24,6 +24,7 @@ def make_config(
 ) -> Config:
     return Config(
         target_channel="@your_news",
+        log_channel="-1001234567890",
         owner_id=1,
         donors=(),
         signatures=signatures

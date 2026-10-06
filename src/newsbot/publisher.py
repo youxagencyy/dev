@@ -38,6 +38,11 @@ class Publisher:
     async def enqueue(self, item: Outgoing) -> None:
         await self.queue.put(item)
 
+    async def publish_now(self, item: Outgoing) -> list[int]:
+        """Publish one approved preview. The review lock is the only caller."""
+        await self.limiter.wait()
+        return await self._send_with_retry(item)
+
     async def worker(self) -> None:
         while True:
             item = await self.queue.get()

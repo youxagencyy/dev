@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_example_config_loads():
     config = load_config(ROOT / "config.example.yaml")
     assert config.target_channel == "@your_news"
+    assert config.log_channel == "-1001234567890"
     assert config.owner_id == 123456789
     assert any(donor.username == "sample_donor" and donor.enabled for donor in config.donors)
     assert "реклама" in config.ad_filter.keywords

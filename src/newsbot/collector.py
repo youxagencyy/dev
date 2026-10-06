@@ -10,7 +10,7 @@ from telethon.tl.types import MessageService
 from newsbot.config import Config, Donor
 from newsbot.db import Database
 from newsbot.pipeline import Pipeline, PostInput
-from newsbot.publisher import Outgoing, Publisher
+from newsbot.review_queue import ReviewQueue
 
 logger = logging.getLogger(__name__)
 
@@ -34,13 +34,13 @@ class Collector:
         config: Config,
         db: Database,
         pipeline: Pipeline,
-        publisher: Publisher,
+        review: ReviewQueue,
     ) -> None:
         self.client = client
         self.config = config
         self.db = db
         self.pipeline = pipeline
-        self.publisher = publisher
+        self.review = review
         self._by_peer: dict[int, Donor] = {}
         self._albums: dict[tuple[str, int], list[Piece]] = {}
         self._tasks: dict[tuple[str, int], asyncio.Task[None]] = {}
@@ -171,7 +171,7 @@ class Collector:
                 has_photo=bool(photos),
                 signature_template=primary.signature_template,
             ),
-            record=True,
+            record=False,
         )
         source_ids = [item.message_id for item in ordered]
         if result.action != "publish":
@@ -184,18 +184,26 @@ class Collector:
                 reason=result.reason,
             )
             logger.info(
-                "not published @%s %s: %s",
+                "not queued @%s %s: %s",
                 primary.donor,
                 ",".join(str(item) for item in source_ids),
                 result.reason,
             )
             return
-        await self.publisher.enqueue(
-            Outgoing(
-                donor=primary.donor,
-                source_ids=source_ids,
-                text=result.text,
-                photos=[blob for blob in photos if blob is not None],
-                fingerprint=result.fingerprint,
-            )
+        preview_id = await self.review.submit(
+            donor=primary.donor,
+            source_ids=source_ids,
+            text=result.text,
+            photos=[blob for blob in photos if blob is not None],
+            dedupe_text=result.dedupe_text,
+        )
+        if preview_id is None:
+            return
+        self.db.log_publish(
+            donor=primary.donor,
+            source_message_ids=source_ids,
+            target_message_ids=None,
+            fingerprint=result.fingerprint,
+            status="review",
+            reason=f"preview {preview_id}",
         )

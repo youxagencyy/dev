@@ -3,16 +3,56 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.enums import ChatType
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import BotCommand, KeyboardButton, Message, ReplyKeyboardMarkup
 from telethon.tl.types import MessageService
 
 from newsbot.pipeline import PostInput
 from newsbot.runtime import Runtime
 
 logger = logging.getLogger(__name__)
+
+START_TEXT = (
+    "Бот на связи. "
+    "В канале проверки: «Отправить» публикует пост в канал новостей, "
+    "«Редактировать» меняет текст, «Отклонить» убирает его."
+)
+
+OWNER_BUTTONS = ("Статус", "Доноры", "Пауза", "Продолжить", "Помощь")
+
+BUTTON_ACTIONS = {
+    "Статус": "status",
+    "Доноры": "donors",
+    "Пауза": "pause",
+    "Продолжить": "resume",
+    "Помощь": "help",
+}
+
+
+def bot_commands() -> list[BotCommand]:
+    return [
+        BotCommand(command="start", description="Бот на связи"),
+        BotCommand(command="status", description="Состояние и ошибки"),
+        BotCommand(command="donors", description="Список доноров"),
+        BotCommand(command="pause", description="Не брать новые посты"),
+        BotCommand(command="resume", description="Снова брать посты"),
+        BotCommand(command="help", description="Что делают кнопки"),
+        BotCommand(command="preview", description="Предпросмотр без публикации"),
+    ]
+
+
+def owner_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="Статус"), KeyboardButton(text="Доноры")],
+            [KeyboardButton(text="Пауза"), KeyboardButton(text="Продолжить")],
+            [KeyboardButton(text="Помощь")],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 
 def build_router(runtime: Runtime) -> Router:
@@ -25,52 +65,109 @@ def build_router(runtime: Runtime) -> Router:
             user is not None and user.id == owner_id and message.chat.type == ChatType.PRIVATE
         )
 
+    def owner_markup(message: Message) -> ReplyKeyboardMarkup | None:
+        if is_owner(message):
+            return owner_keyboard()
+        return None
+
+    async def only_owner(message: Message) -> bool:
+        if is_owner(message):
+            return True
+        await message.answer("нет доступа")
+        return False
+
+    async def send_start(message: Message) -> None:
+        sent = await message.answer(START_TEXT, reply_markup=owner_markup(message))
+        logger.info("outgoing start reply message_id=%s", sent.message_id)
+
+    @router.message(Command("start"))
+    async def start_cmd(message: Message) -> None:
+        await send_start(message)
+
+    @router.message(Command("help"))
+    async def help_cmd(message: Message) -> None:
+        await send_start(message)
+
+    @router.message(F.text.in_(OWNER_BUTTONS))
+    async def button_cmd(message: Message) -> None:
+        action = BUTTON_ACTIONS.get(message.text or "")
+        if action == "help":
+            await send_start(message)
+            return
+        if not await only_owner(message):
+            return
+        markup = owner_keyboard()
+        if action == "status":
+            await message.answer(_status_text(runtime), reply_markup=markup)
+        elif action == "donors":
+            await message.answer(await _donors_text(runtime), reply_markup=markup)
+        elif action == "pause":
+            runtime.db.set_paused(True)
+            logger.info("publishing paused by owner")
+            await message.answer(
+                "Пауза: новые посты не попадают в канал проверки. "
+                "Уже выложенные там кнопки по-прежнему работают.",
+                reply_markup=markup,
+            )
+        elif action == "resume":
+            runtime.db.set_paused(False)
+            logger.info("publishing resumed by owner")
+            await message.answer("Публикация продолжена.", reply_markup=markup)
+
     @router.message(Command("status"))
     async def status_cmd(message: Message) -> None:
-        if not is_owner(message):
+        if not await only_owner(message):
             return
-        await message.answer(_status_text(runtime))
+        await message.answer(_status_text(runtime), reply_markup=owner_keyboard())
 
     @router.message(Command("pause"))
     async def pause_cmd(message: Message) -> None:
-        if not is_owner(message):
+        if not await only_owner(message):
             return
         runtime.db.set_paused(True)
         logger.info("publishing paused by owner")
         await message.answer(
-            "Публикация на паузе. Новые посты доноров пропускаются и не копятся в очереди."
+            "Пауза: новые посты не попадают в канал проверки. "
+            "Уже выложенные там кнопки по-прежнему работают.",
+            reply_markup=owner_keyboard(),
         )
 
     @router.message(Command("resume"))
     async def resume_cmd(message: Message) -> None:
-        if not is_owner(message):
+        if not await only_owner(message):
             return
         runtime.db.set_paused(False)
         logger.info("publishing resumed by owner")
-        await message.answer("Публикация продолжена.")
+        await message.answer("Публикация продолжена.", reply_markup=owner_keyboard())
 
     @router.message(Command("donors"))
     async def donors_cmd(message: Message) -> None:
-        if not is_owner(message):
+        if not await only_owner(message):
             return
-        lines = []
-        for donor in runtime.config.donors:
-            state = "включён" if donor.enabled else "выключен"
-            signature = donor.signature or runtime.config.signatures.default
-            lines.append(f"@{donor.username} — {state}, подпись: {signature}")
-        await message.answer("Доноры:\n" + "\n".join(lines))
+        await message.answer(await _donors_text(runtime), reply_markup=owner_keyboard())
 
     @router.message(Command("preview"))
     async def preview_cmd(message: Message) -> None:
-        if not is_owner(message):
+        if not await only_owner(message):
             return
         parts = (message.text or "").split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip():
             await message.answer("Использование: /preview <username донора>")
             return
-        await message.answer(await _preview(runtime, parts[1].strip()))
+        await message.answer(await _preview(runtime, parts[1].strip()), reply_markup=owner_keyboard())
 
     return router
+
+
+async def _donors_text(runtime: Runtime) -> str:
+    if not runtime.config.donors:
+        return "Доноры не заданы."
+    lines = []
+    for donor in runtime.config.donors:
+        state = "включён" if donor.enabled else "выключен"
+        signature = donor.signature or runtime.config.signatures.default or "не задана"
+        lines.append(f"@{donor.username} — {state}, подпись: {signature}")
+    return "Доноры:\n" + "\n".join(lines)
 
 
 def _status_text(runtime: Runtime) -> str:
@@ -80,7 +177,7 @@ def _status_text(runtime: Runtime) -> str:
         f"Состояние: {'пауза' if runtime.db.is_paused() else 'работает'}",
         f"Цель: {runtime.config.target_channel}",
         f"Доноры: {len(donors)} (включено {enabled})",
-        f"Очередь публикации: {runtime.publisher.qsize()}",
+        f"На проверке: {runtime.db.count_pending_previews()}",
         "Последние ошибки:",
     ]
     errors = runtime.db.recent_errors(5)
@@ -105,6 +202,8 @@ def _status_text(runtime: Runtime) -> str:
 
 
 async def _preview(runtime: Runtime, raw_username: str) -> str:
+    if runtime.client is None:
+        return "Сессия пользователя не авторизована. Чтение доноров выключено."
     username = raw_username.lstrip("@")
     donor = next(
         (

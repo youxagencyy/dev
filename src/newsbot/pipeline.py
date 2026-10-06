@@ -32,6 +32,7 @@ class PipelineResult:
     reason: str
     text: str
     fingerprint: str
+    dedupe_text: str = ""
 
 
 class Pipeline:
@@ -101,7 +102,7 @@ class Pipeline:
             )
             text = append_signature(body, self.config.signatures, post.signature_template)
             text = fit_text(text, limit)
-            return PipelineResult("publish", "", text, digest)
+            return PipelineResult("publish", "", text, digest, cleaned)
 
     def _clean(self, post: PostInput) -> str | PipelineResult:
         if post.is_service:
