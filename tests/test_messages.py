@@ -20,13 +20,13 @@ class MessageTests(unittest.TestCase):
             volume_24h=8000,
             end_date=datetime(2026, 10, 10, 22, 0, tzinfo=timezone.utc),
             hours_left=72,
-            url="https://polymarket.com/event/will-it-rain-event",
+            url="https://polymarket.com/event/will-it-rain-event/will-it-rain",
         )
         text = format_alert(alert, Settings())
         self.assertIn("Рынок: Will it rain on Friday?", text)
         self.assertIn("Исход: Yes", text)
         self.assertIn("Цена покупки (ask): 0.930 (93.0%)", text)
-        self.assertIn("Ссылка: https://polymarket.com/event/will-it-rain-event", text)
+        self.assertIn("Ссылка: https://polymarket.com/event/will-it-rain-event/will-it-rain", text)
         self.assertIn("Почему сработало:", text)
         self.assertIn("0.90–0.97", text)
         self.assertIn("спред 0.020 ≤ 0.03", text)

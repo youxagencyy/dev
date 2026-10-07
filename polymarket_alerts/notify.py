@@ -18,8 +18,8 @@ class DryRunNotifier:
         self._out = out if out is not None else sys.stdout
 
     def send(self, text: str) -> None:
-        print(text, file=self._out)
-        print(file=self._out)
+        print(text, file=self._out, flush=True)
+        print(file=self._out, flush=True)
 
 
 class TelegramNotifier:

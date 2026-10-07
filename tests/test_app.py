@@ -60,7 +60,7 @@ class AppTests(unittest.TestCase):
             self.assertEqual((sent, scanned, matched), (2, 2, 2))
             text = output.getvalue()
             self.assertIn("Исход: Yes", text)
-            self.assertIn("https://polymarket.com/event/will-it-rain-event", text)
+            self.assertIn("https://polymarket.com/event/will-it-rain-event/will-it-rain", text)
 
             output.seek(0)
             output.truncate(0)

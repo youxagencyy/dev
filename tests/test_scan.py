@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from polymarket_alerts.clob import top_of_book
 from polymarket_alerts.config import Settings
-from polymarket_alerts.scan import select_alerts
+from polymarket_alerts.scan import market_url, select_alerts
 
 NOW = datetime(2026, 10, 7, 22, 0, tzinfo=timezone.utc)
 
@@ -38,6 +38,16 @@ def tight_book():
     }
 
 
+class MarketUrlTests(unittest.TestCase):
+    def test_event_and_market_slugs_both_appear_when_they_differ(self):
+        url = market_url(market())
+        self.assertEqual(url, "https://polymarket.com/event/will-it-rain-event/will-it-rain")
+
+    def test_matching_slugs_stay_on_the_event_page(self):
+        url = market_url(market(slug="will-it-rain-event"))
+        self.assertEqual(url, "https://polymarket.com/event/will-it-rain-event")
+
+
 class TopOfBookTests(unittest.TestCase):
     def test_uses_best_prices_not_first_row(self):
         top = top_of_book(tight_book())
@@ -59,7 +69,10 @@ class SelectAlertsTests(unittest.TestCase):
         self.assertEqual(alert.outcome, "Yes")
         self.assertEqual(alert.ask, 0.93)
         self.assertAlmostEqual(alert.spread, 0.02)
-        self.assertEqual(alert.url, "https://polymarket.com/event/will-it-rain-event")
+        self.assertEqual(
+            alert.url,
+            "https://polymarket.com/event/will-it-rain-event/will-it-rain",
+        )
 
     def test_rejects_price_above_ceiling_and_below_floor(self):
         high = market(id="2", outcomePrices='["0.999", "0.001"]')

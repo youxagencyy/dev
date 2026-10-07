@@ -108,10 +108,10 @@ def _market_candidates(market: dict, settings: Settings, now: datetime) -> list[
         return []
     if liquidity < settings.min_liquidity_usd or volume < settings.min_volume_24h_usd:
         return []
-    slug = _event_slug(market)
+    url = market_url(market)
     condition_id = str(market.get("conditionId") or market.get("id") or "")
     question = str(market.get("question") or "").strip()
-    if not slug or not condition_id or not question:
+    if not url or not condition_id or not question:
         return []
     try:
         outcomes = _json_list(market.get("outcomes"))
@@ -121,7 +121,6 @@ def _market_candidates(market: dict, settings: Settings, now: datetime) -> list[
         return []
     if not (len(outcomes) == len(prices) == len(token_ids)) or not outcomes:
         return []
-    url = "https://polymarket.com/event/" + quote(slug, safe="-_")
     picked: list[Candidate] = []
     for outcome, raw_price, token_id in zip(outcomes, prices, token_ids):
         try:
@@ -172,6 +171,24 @@ def _confirm(candidate: Candidate, top: BookTop | None, settings: Settings, now:
         hours_left=hours_left,
         url=candidate.url,
     )
+
+
+def market_url(market: dict) -> str:
+    """Link to this market. Multi-outcome events need the market slug, not only the event."""
+    event_slug = _event_slug(market)
+    market_slug = str(market.get("slug") or "").strip()
+    if event_slug and market_slug and market_slug != event_slug:
+        path = f"{_slug(event_slug)}/{_slug(market_slug)}"
+    else:
+        slug = event_slug or market_slug
+        path = _slug(slug) if slug else ""
+    if not path:
+        return ""
+    return "https://polymarket.com/event/" + path
+
+
+def _slug(value: str) -> str:
+    return quote(value, safe="-_")
 
 
 def _event_slug(market: dict) -> str:
