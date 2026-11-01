@@ -1,44 +1,15 @@
 import type { ArticleCategory } from "@prisma/client";
-import { categoryFromEnum, categoryToEnum } from "./categories";
+import { categoryFromEnum } from "./categories";
 import { requirePrisma } from "./db";
 import type { NewsItem } from "./types";
 
-export async function ensureArticle(item: NewsItem) {
+export async function recordRead(userId: string, slug: string) {
   const prisma = requirePrisma();
-  const category = categoryToEnum(item.category) as ArticleCategory;
-  const publishedAt = Number.isNaN(Date.parse(item.publishedAt)) ? null : new Date(item.publishedAt);
-  const summaryBullets = item.summary ? [item.summary] : [];
-
-  return prisma.article.upsert({
-    where: { slug: item.id },
-    create: {
-      slug: item.id,
-      title: item.title,
-      rewrittenBody: "",
-      summaryBullets,
-      tags: item.tags,
-      coverUrl: item.image ?? null,
-      category,
-      status: "PUBLISHED",
-      outletName: item.source || "ВАРТА",
-      publishedAt,
-    },
-    update: {
-      title: item.title,
-      summaryBullets,
-      tags: item.tags,
-      coverUrl: item.image ?? null,
-      category,
-      outletName: item.source || "ВАРТА",
-      publishedAt,
-      status: "PUBLISHED",
-    },
+  const article = await prisma.article.findFirst({
+    where: { slug, status: "PUBLISHED" },
+    select: { id: true },
   });
-}
-
-export async function recordRead(userId: string, item: NewsItem) {
-  const prisma = requirePrisma();
-  const article = await ensureArticle(item);
+  if (!article) return;
   const existing = await prisma.readEvent.findFirst({
     where: { userId, articleId: article.id },
     orderBy: { readAt: "desc" },

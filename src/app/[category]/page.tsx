@@ -1,11 +1,11 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { StoryRow } from "@/components/Stories";
-import { getNews } from "@/lib/aggregate";
+import { getPublishedNews } from "@/lib/catalog";
 import { CATEGORIES, getCategory } from "@/lib/categories";
 import { formatCount, formatWhen } from "@/lib/format";
 
-export const revalidate = 600;
+export const dynamic = "force-dynamic";
 export const dynamicParams = false;
 
 export function generateStaticParams() {
@@ -32,7 +32,7 @@ export default async function CategoryPage({
   const section = getCategory(category);
   if (!section) notFound();
 
-  const snapshot = await getNews();
+  const snapshot = await getPublishedNews();
   const items = snapshot.items.filter((item) => item.category === section.slug).slice(0, 40);
 
   return (

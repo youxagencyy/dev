@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { auth } from "@/auth";
 import { StoryRow } from "@/components/Stories";
-import { getNews } from "@/lib/aggregate";
+import { getPublishedNews } from "@/lib/catalog";
 import { selectedSlugs } from "@/lib/categories";
 import { requirePrisma } from "@/lib/db";
 import { formatCount, formatWhen } from "@/lib/format";
@@ -18,7 +18,7 @@ export default async function CabinetFeedPage() {
     select: { feedCategories: true },
   });
   const allowed = new Set(selectedSlugs(user?.feedCategories ?? []));
-  const snapshot = await getNews();
+  const snapshot = await getPublishedNews();
   const items = snapshot.items.filter((item) => allowed.size === 0 || allowed.has(item.category)).slice(0, 30);
   const now = Date.now();
   const hidden = 4 - allowed.size;

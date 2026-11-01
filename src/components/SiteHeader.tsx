@@ -12,7 +12,7 @@ const links = [{ href: "/", label: "Головна", id: "home" }, ...CATEGORIES
   id: category.slug,
 }))];
 
-export function SiteHeader({ signedIn }: { signedIn: boolean }) {
+export function SiteHeader({ signedIn, admin = false }: { signedIn: boolean; admin?: boolean }) {
   const pathname = usePathname();
   const section = pathname === "/" ? "home" : pathname.split("/").filter(Boolean)[0];
   const today = formatToday();
@@ -51,6 +51,19 @@ export function SiteHeader({ signedIn }: { signedIn: boolean }) {
             })}
           </ul>
         </nav>
+        {admin ? (
+          <Link
+            href="/redaktsiia"
+            aria-current={section === "redaktsiia" ? "page" : undefined}
+            className={`shrink-0 rounded-full px-3 py-1.5 text-[13px] transition-colors ${
+              section === "redaktsiia"
+                ? "bg-zinc-950 text-white dark:bg-white dark:text-zinc-950"
+                : "text-zinc-600 hover:bg-black/5 hover:text-zinc-950 dark:text-zinc-400 dark:hover:bg-white/10 dark:hover:text-white"
+            }`}
+          >
+            Редакція
+          </Link>
+        ) : null}
         <Link
           href={signedIn ? "/kabinet" : "/uviity"}
           aria-current={section === "kabinet" || section === "uviity" ? "page" : undefined}

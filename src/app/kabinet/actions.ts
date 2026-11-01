@@ -5,8 +5,7 @@ import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
-import { ensureArticle, recordRead } from "@/lib/articles";
-import { getNews } from "@/lib/aggregate";
+import { recordRead } from "@/lib/articles";
 import { CATEGORIES, categoryToEnum, type CategorySlug } from "@/lib/categories";
 import { requirePrisma } from "@/lib/db";
 import { THEME_COOKIE, parseTheme, themeCookie } from "@/lib/theme";
@@ -20,10 +19,7 @@ async function readerId(): Promise<string> {
 export async function recordReadAction(articleId: string) {
   const session = await auth();
   if (!session?.user?.id) return;
-  const snapshot = await getNews();
-  const item = snapshot.items.find((entry) => entry.id === articleId);
-  if (!item) return;
-  await recordRead(session.user.id, item);
+  await recordRead(session.user.id, articleId);
 }
 
 export async function createFolderAction(formData: FormData) {
@@ -56,15 +52,13 @@ export async function saveBookmarkAction(formData: FormData) {
   const userId = await readerId();
   const slug = String(formData.get("articleId") ?? "");
   const folderId = String(formData.get("folderId") ?? "");
-  const snapshot = await getNews();
-  const item = snapshot.items.find((entry) => entry.id === slug);
-  if (!item) redirect("/");
   const prisma = requirePrisma();
+  const article = await prisma.article.findFirst({ where: { slug, status: "PUBLISHED" } });
+  if (!article) redirect("/");
   if (folderId) {
     const folder = await prisma.folder.findFirst({ where: { id: folderId, userId } });
     if (!folder) redirect(`/n/${slug}`);
   }
-  const article = await ensureArticle(item);
   await prisma.bookmark.upsert({
     where: { userId_articleId: { userId, articleId: article.id } },
     create: { userId, articleId: article.id, folderId: folderId || null },

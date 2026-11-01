@@ -7,7 +7,7 @@ import { Cover } from "@/components/Cover";
 import { RecordRead } from "@/components/RecordRead";
 import { Capsule, StoryRow } from "@/components/Stories";
 import { auth } from "@/auth";
-import { getNews } from "@/lib/aggregate";
+import { getPublishedNews } from "@/lib/catalog";
 import { categoryLabel } from "@/lib/categories";
 import { requirePrisma } from "@/lib/db";
 import { formatDateTime, formatWhen } from "@/lib/format";
@@ -19,7 +19,7 @@ export async function generateMetadata({
   params: Promise<{ id: string }>;
 }): Promise<Metadata> {
   const { id } = await params;
-  const snapshot = await getNews();
+  const snapshot = await getPublishedNews();
   const item = snapshot.items.find((entry) => entry.id === id);
   if (!item) return { title: "Матеріал" };
   return {
@@ -30,7 +30,7 @@ export async function generateMetadata({
 
 export default async function ItemPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const snapshot = await getNews();
+  const snapshot = await getPublishedNews();
   const item = snapshot.items.find((entry) => entry.id === id);
   if (!item) notFound();
 

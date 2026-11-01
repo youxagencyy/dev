@@ -39,7 +39,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
     >
       <body className="bg-[#f6f6f7] font-sans text-[#0A0A0C] antialiased dark:bg-[#0A0A0C] dark:text-[#f4f4f5]">
         <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
-        <SiteHeader signedIn={Boolean(session?.user)} />
+        <SiteHeader signedIn={Boolean(session?.user)} admin={session?.user?.role === "ADMIN"} />
         {children}
         <SiteFooter />
       </body>

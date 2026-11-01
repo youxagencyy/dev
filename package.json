@@ -9,6 +9,7 @@
     "postinstall": "prisma generate",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
+    "admin:seed": "node --env-file=.env scripts/seed-admin.mjs",
     "test": "node --experimental-strip-types --experimental-detect-module --test src/lib/*.test.ts"
   },
   "dependencies": {

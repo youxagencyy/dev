@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { SearchExplorer } from "@/components/SearchExplorer";
-import { getNews } from "@/lib/aggregate";
+import { getPublishedNews } from "@/lib/catalog";
 import { formatWhen } from "@/lib/format";
 import { parseSearchFilters } from "@/lib/search";
 
@@ -25,7 +25,7 @@ export default async function SearchPage({
     tag: first(params.tag),
     time: first(params.time),
   });
-  const snapshot = await getNews();
+  const snapshot = await getPublishedNews();
   const now = Date.now();
   const times = Object.fromEntries(
     snapshot.items.map((item) => [item.id, formatWhen(item.publishedAt, now)]),

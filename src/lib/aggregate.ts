@@ -29,7 +29,7 @@ type ParsedItem = {
   enclosure?: { url?: string; type?: string };
 };
 
-async function loadFeed(feed: FeedSource): Promise<{ items: NewsItem[]; failure?: FeedFailure }> {
+export async function loadFeed(feed: FeedSource): Promise<{ items: NewsItem[]; failure?: FeedFailure }> {
   try {
     const response = await fetch(feed.url, {
       headers: {

@@ -1,13 +1,13 @@
 import { Brief, Lane, LeadCard, MiniCard, SideCard, UrgentList } from "@/components/Stories";
 import { Magnetic, Reveal } from "@/components/Motion";
-import { getNews } from "@/lib/aggregate";
+import { getPublishedNews } from "@/lib/catalog";
 import { formatClock, formatCount, formatWhen } from "@/lib/format";
 import { laneItems, pickBrief } from "@/lib/home-feed";
 
-export const revalidate = 600;
+export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
-  const snapshot = await getNews();
+  const snapshot = await getPublishedNews();
   const items = snapshot.items.slice(0, 48);
   const [lead, side, ...afterSide] = items;
   const minis = afterSide.slice(0, 2);
@@ -32,13 +32,9 @@ export default async function HomePage() {
         ) : null}
       </header>
 
-      {snapshot.failures.length > 0 && items.length > 0 ? (
-        <p className="mb-6 text-sm text-zinc-500">Деякі стрічки зараз недоступні. Показано те, що відповіло.</p>
-      ) : null}
-
       {items.length === 0 ? (
         <p className="max-w-md py-16 text-lg leading-relaxed text-zinc-500">
-          Стрічка зараз порожня. Джерела тимчасово не відповідають — спробуйте оновити сторінку трохи згодом.
+          Стрічка зараз порожня. Тут з’являються матеріали, які редакція вже опублікувала.
         </p>
       ) : (
         <>
