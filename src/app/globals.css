@@ -1,11 +1,17 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme inline {
   --font-sans: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
 }
 
 html {
-  color-scheme: light dark;
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
 }
 
 ::selection {
@@ -13,11 +19,9 @@ html {
   color: #f6f6f7;
 }
 
-@media (prefers-color-scheme: dark) {
-  ::selection {
-    background: #f6f6f7;
-    color: #0a0a0c;
-  }
+html.dark ::selection {
+  background: #f6f6f7;
+  color: #0a0a0c;
 }
 
 body {
@@ -27,9 +31,7 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-@media (prefers-color-scheme: dark) {
-  body {
-    background: #0a0a0c;
-    color: #f4f4f5;
-  }
+html.dark body {
+  background: #0a0a0c;
+  color: #f4f4f5;
 }

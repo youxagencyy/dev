@@ -2,19 +2,16 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArticleTools } from "@/components/ArticleTools";
+import { BookmarkPanel } from "@/components/BookmarkPanel";
 import { Cover } from "@/components/Cover";
+import { RecordRead } from "@/components/RecordRead";
 import { Capsule, StoryRow } from "@/components/Stories";
+import { auth } from "@/auth";
 import { getNews } from "@/lib/aggregate";
 import { categoryLabel } from "@/lib/categories";
+import { requirePrisma } from "@/lib/db";
 import { formatDateTime, formatWhen } from "@/lib/format";
 import { relatedStories } from "@/lib/search";
-
-export const revalidate = 600;
-
-export async function generateStaticParams() {
-  const snapshot = await getNews();
-  return snapshot.items.slice(0, 40).map((item) => ({ id: item.id }));
-}
 
 export async function generateMetadata({
   params,
@@ -40,9 +37,32 @@ export default async function ItemPage({ params }: { params: Promise<{ id: strin
   const when = formatDateTime(item.publishedAt);
   const now = Date.now();
   const related = relatedStories(item, snapshot.items, 3);
+  const session = await auth();
+  const signedIn = Boolean(session?.user);
+  let folders: { id: string; name: string }[] = [];
+  let saved = false;
+  let folderId: string | null = null;
+  if (session?.user) {
+    const prisma = requirePrisma();
+    const [readerFolders, bookmark] = await Promise.all([
+      prisma.folder.findMany({
+        where: { userId: session.user.id },
+        orderBy: { name: "asc" },
+        select: { id: true, name: true },
+      }),
+      prisma.bookmark.findFirst({
+        where: { userId: session.user.id, article: { slug: item.id } },
+        select: { folderId: true },
+      }),
+    ]);
+    folders = readerFolders;
+    saved = Boolean(bookmark);
+    folderId = bookmark?.folderId ?? null;
+  }
 
   return (
     <>
+      {signedIn ? <RecordRead articleId={item.id} /> : null}
       <ArticleTools articleId={item.id} title={item.title} summary={item.summary} />
       <main id="content" className="mx-auto w-full max-w-[760px] px-4 pb-32 pt-12 sm:px-6">
         <article>
@@ -82,6 +102,7 @@ export default async function ItemPage({ params }: { params: Promise<{ id: strin
               Короткий виклад для цього матеріалу недоступний.
             </p>
           )}
+          <BookmarkPanel articleId={item.id} signedIn={signedIn} folders={folders} saved={saved} folderId={folderId} />
           <p className="mt-12 flex flex-wrap gap-x-6 gap-y-2 text-sm">
             <Link
               href={`/${item.category}`}

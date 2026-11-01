@@ -1,7 +1,10 @@
 import type { Metadata } from "next";
 import { Geist } from "next/font/google";
+import { cookies } from "next/headers";
 import { SiteFooter } from "@/components/SiteFooter";
 import { SiteHeader } from "@/components/SiteHeader";
+import { auth } from "@/auth";
+import { THEME_COOKIE, parseTheme, themeBootScript } from "@/lib/theme";
 import "./globals.css";
 
 const geist = Geist({
@@ -20,11 +23,23 @@ export const metadata: Metadata = {
   applicationName: "ВАРТА",
 };
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  const session = await auth();
+  const jar = await cookies();
+  const theme = session?.user
+    ? parseTheme(jar.get(THEME_COOKIE)?.value ?? session.user.theme)
+    : "SYSTEM";
+
   return (
-    <html lang="uk" className={geist.variable}>
+    <html
+      lang="uk"
+      data-theme={theme}
+      className={`${geist.variable}${theme === "DARK" ? " dark" : ""}`}
+      suppressHydrationWarning
+    >
       <body className="bg-[#f6f6f7] font-sans text-[#0A0A0C] antialiased dark:bg-[#0A0A0C] dark:text-[#f4f4f5]">
-        <SiteHeader />
+        <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
+        <SiteHeader signedIn={Boolean(session?.user)} />
         {children}
         <SiteFooter />
       </body>

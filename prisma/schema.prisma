@@ -12,6 +12,12 @@ enum Role {
   ADMIN
 }
 
+enum Theme {
+  SYSTEM
+  LIGHT
+  DARK
+}
+
 enum ArticleStatus {
   DRAFT
   PUBLISHED
@@ -32,6 +38,10 @@ model User {
   emailVerified    DateTime?
   image            String?
   role             Role              @default(READER)
+  passwordHash     String?
+  theme            Theme             @default(SYSTEM)
+  /// Categories included in this reader's personal feed.
+  feedCategories   ArticleCategory[] @default([UKRAINA, VIINA, POLITYKA, SVIT])
   accounts         Account[]
   sessions         Session[]
   folders          Folder[]

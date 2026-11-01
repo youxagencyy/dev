@@ -12,7 +12,9 @@
 npm install && npm run dev
 ```
 
-Відкрийте [http://localhost:3000](http://localhost:3000). Пошук — на `/search`: збіги підсвічуються одразу, є фільтри розділу, тега й часу. На сторінці матеріалу — прогрес читання, вподобання на цьому пристрої, поширення посилання ВАРТИ і кнопка «Прослухати» через озвучення браузера. Посилання на сайт редакції не додається: достатньо назви видання.
+Відкрийте [http://localhost:3000](http://localhost:3000). Пошук — на `/search`. На сторінці матеріалу — прогрес читання, поширення посилання ВАРТИ і кнопка «Прослухати» через озвучення браузера. Посилання на сайт редакції не додається: достатньо назви видання.
+
+Кабінет читача: реєстрація на `/reiestratsiia`, вхід на `/uviity`. Там теми закладок, історія читання і налаштування теми, стрічки та сповіщень. Для кабінету потрібні Postgres і `AUTH_SECRET` у `.env`.
 
 Стрічки читаються на сервері й кешуються на 10 хвилин. Ключ API не потрібен. Якщо якесь джерело не відповідає, сайт показує решту.
 
@@ -53,7 +55,9 @@ npx prisma migrate deploy
 
 `DATABASE_URL` у `.env.example`: `postgresql://postgres:postgres@localhost:5432/varta?schema=public`.
 
-У схемі: джерела, матеріали (заголовок, переписаний текст, три пункти викладу, теги, обкладинка, розділ, статус чернетка/опубліковано), користувачі з ролями reader/admin, моделі NextAuth, закладки й теки, історія читання, налаштування сповіщень. Вхід, кабінет і перепис текстів у цьому кроці не вмикаються.
+У схемі: джерела, матеріали, користувачі з ролями reader/admin, пароль для локального входу, тема, розділи персональної стрічки, моделі NextAuth, закладки й теки, історія читання, налаштування сповіщень. Адмінка і перепис текстів не вмикаються.
+
+Той самий `DATABASE_URL` працює і з локальним PostgreSQL на порту 5432, без Docker.
 
 ## English
 
@@ -65,4 +69,4 @@ npm install && npm run dev
 
 Open http://localhost:3000. Headlines and short RSS excerpts only, cached for 10 minutes. A failed feed is skipped. Search lives at `/search`. Article pages can be read aloud with the browser Speech Synthesis API.
 
-Postgres is optional for the homepage. Schema and migration: `prisma/schema.prisma`, `prisma/migrations/20261101130000_init`. Apply with `npx prisma migrate deploy` after copying `.env.example` to `.env` and starting a local database on port 5432.
+Postgres is optional for the public homepage and required for the reader cabinet. Copy `.env.example` to `.env`, set `AUTH_SECRET`, start PostgreSQL on port 5432, then run `npx prisma migrate deploy`. Sign up at `/reiestratsiia`. New accounts are readers. Theme, bookmarks, read history, and notification toggles are stored in the database.

@@ -9,3 +9,9 @@ export function getPrisma(): PrismaClient | null {
   }
   return globalForPrisma.prisma;
 }
+
+export function requirePrisma(): PrismaClient {
+  const prisma = getPrisma();
+  if (!prisma) throw new Error("DATABASE_URL is not set");
+  return prisma;
+}

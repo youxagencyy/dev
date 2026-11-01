@@ -30,3 +30,35 @@ export function getCategory(slug: string) {
 export function categoryLabel(slug: CategorySlug): string {
   return getCategory(slug)?.label ?? slug;
 }
+
+export type ArticleCategoryCode = "UKRAINA" | "VIINA" | "POLITYKA" | "SVIT";
+
+const TO_ENUM: Record<CategorySlug, ArticleCategoryCode> = {
+  ukraina: "UKRAINA",
+  viina: "VIINA",
+  polityka: "POLITYKA",
+  svit: "SVIT",
+};
+
+const FROM_ENUM: Record<ArticleCategoryCode, CategorySlug> = {
+  UKRAINA: "ukraina",
+  VIINA: "viina",
+  POLITYKA: "polityka",
+  SVIT: "svit",
+};
+
+export function categoryToEnum(slug: CategorySlug): ArticleCategoryCode {
+  return TO_ENUM[slug];
+}
+
+export function categoryFromEnum(code: string): CategorySlug | null {
+  if (code in FROM_ENUM) return FROM_ENUM[code as ArticleCategoryCode];
+  return null;
+}
+
+export function selectedSlugs(codes: string[]): CategorySlug[] {
+  return codes.flatMap((code) => {
+    const slug = categoryFromEnum(code);
+    return slug ? [slug] : [];
+  });
+}
