@@ -85,6 +85,18 @@ describe("classify", () => {
     );
   });
 
+  it("sends a Serbia capital-control story to the world section", () => {
+    assert.equal(
+      classify(
+        "Сербський «Студентський список» закликав банки стежити за виведенням грошей із країни",
+        "",
+        ["Новини"],
+        "ukraina",
+      ),
+      "svit",
+    );
+  });
+
   it("keeps a foreign military crisis in the world section", () => {
     assert.equal(
       classify(
@@ -104,6 +116,7 @@ describe("off topic", () => {
     assert.equal(isOffTopic("Найкращі серіали листопада", []), true);
     assert.equal(isOffTopic("Україні прогнозують до +15°, подекуди дощі", ["Україна"]), true);
     assert.equal(isOffTopic("8 популярних техно-гаджетів цього року", ["Технології"]), true);
+    assert.equal(isOffTopic("Перший продюсер Нікіток зізнався у старті кар'єри", []), true);
     assert.equal(
       isOffTopic("Залізні спортсмени. Олімпіада роботів-гуманоїдів у Пекіні", ["Світ"]),
       true,

@@ -114,4 +114,4 @@ export async function loadNews(): Promise<NewsSnapshot> {
   };
 }
 
-export const getNews = unstable_cache(loadNews, ["varta-news-v2"], { revalidate: 600 });
+export const getNews = unstable_cache(loadNews, ["varta-news-v3"], { revalidate: 600 });

@@ -1,18 +1,12 @@
 import type { Metadata } from "next";
-import { Literata, Manrope } from "next/font/google";
+import { Geist } from "next/font/google";
 import { SiteFooter } from "@/components/SiteFooter";
 import { SiteHeader } from "@/components/SiteHeader";
 import "./globals.css";
 
-const sans = Manrope({
+const geist = Geist({
   subsets: ["cyrillic", "latin"],
-  variable: "--font-sans",
-  display: "swap",
-});
-
-const serif = Literata({
-  subsets: ["cyrillic", "latin"],
-  variable: "--font-serif",
+  variable: "--font-geist",
   display: "swap",
 });
 
@@ -22,14 +16,14 @@ export const metadata: Metadata = {
     template: "%s — ВАРТА",
   },
   description:
-    "Агрегатор новин українською: Україна, війна, політика, світ. Заголовки та короткі виклади з відкритих стрічок.",
+    "Новини українською: Україна, війна, політика, світ. Заголовки та короткі виклади з відкритих стрічок.",
   applicationName: "ВАРТА",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="uk" className={`${sans.variable} ${serif.variable}`}>
-      <body>
+    <html lang="uk" className={geist.variable}>
+      <body className="bg-[#f6f6f7] font-sans text-[#0A0A0C] antialiased dark:bg-[#0A0A0C] dark:text-[#f4f4f5]">
         <SiteHeader />
         {children}
         <SiteFooter />
