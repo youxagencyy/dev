@@ -2,7 +2,7 @@ import Parser from "rss-parser";
 import { unstable_cache } from "next/cache";
 import { FEEDS, type FeedSource } from "./feeds";
 import { pickImage } from "./media";
-import { classify, dedupe, isFresh, isOffTopic, makeId, normalizeTitle, toExcerpt } from "./text";
+import { classify, dedupe, extractTags, isFresh, isOffTopic, makeId, normalizeTitle, toExcerpt } from "./text";
 import type { FeedFailure, NewsItem, NewsSnapshot } from "./types";
 
 const PER_FEED_LIMIT = 25;
@@ -85,6 +85,7 @@ async function loadFeed(feed: FeedSource): Promise<{ items: NewsItem[]; failure?
         source: feed.name,
         publishedAt: new Date(parsedDate).toISOString(),
         category: classify(title, summary, categories, feed.fallback),
+        tags: extractTags(title, summary),
         ...(image ? { image } : {}),
       });
     }
@@ -114,4 +115,4 @@ export async function loadNews(): Promise<NewsSnapshot> {
   };
 }
 
-export const getNews = unstable_cache(loadNews, ["varta-news-v3"], { revalidate: 600 });
+export const getNews = unstable_cache(loadNews, ["varta-news-v4"], { revalidate: 600 });

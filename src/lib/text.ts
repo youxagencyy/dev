@@ -319,6 +319,40 @@ function significantTokens(value: string): string[] {
   return value.split(" ").filter((token) => token.length >= 4);
 }
 
+const TOPIC_TAGS: { label: string; stems: string[] }[] = [
+  { label: "Київ", stems: ["київ", "києв"] },
+  { label: "Харків", stems: ["харків", "харков"] },
+  { label: "Одеса", stems: ["одес"] },
+  { label: "Зеленський", stems: ["зеленськ"] },
+  { label: "Фронт", stems: ["фронт", "зсу"] },
+  { label: "Дрони", stems: ["дрон", "бпла", "шахед"] },
+  { label: "Енергетика", stems: ["енерг", "світл", "дтек"] },
+  { label: "США", stems: ["сша", "трамп", "рубіо", "вашингтон"] },
+  { label: "Європа", stems: ["європ", "брюссел", "єс"] },
+  { label: "G20", stems: ["g20"] },
+  { label: "Польща", stems: ["польщ", "туск"] },
+  { label: "Переговори", stems: ["переговор", "мирн"] },
+];
+
+function stemHit(haystack: string, stem: string): boolean {
+  if (stem.length <= 3) {
+    const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?:$|[^\\p{L}\\p{N}])`, "iu").test(haystack);
+  }
+  return haystack.includes(stem);
+}
+
+export function extractTags(title: string, summary: string): string[] {
+  const haystack = fold(`${title} ${summary}`);
+  const tags: string[] = [];
+  for (const topic of TOPIC_TAGS) {
+    if (!topic.stems.some((stem) => stemHit(haystack, stem))) continue;
+    tags.push(topic.label);
+    if (tags.length === 3) break;
+  }
+  return tags;
+}
+
 export function dedupe(items: NewsItem[]): NewsItem[] {
   const sorted = [...items].sort(
     (a, b) => Date.parse(b.publishedAt) - Date.parse(a.publishedAt),
@@ -336,6 +370,7 @@ export function dedupe(items: NewsItem[]): NewsItem[] {
       ...previous,
       image: previous.image || item.image,
       summary: previous.summary.length >= item.summary.length ? previous.summary : item.summary,
+      tags: [...new Set([...(previous.tags ?? []), ...(item.tags ?? [])])].slice(0, 4),
     };
   }
 

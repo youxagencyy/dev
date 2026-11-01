@@ -11,6 +11,7 @@ function item(id: string, category: NewsItem["category"], publishedAt: string): 
     source: "Тест",
     publishedAt,
     category,
+    tags: [],
   };
 }
 

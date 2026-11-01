@@ -7,6 +7,7 @@ export type NewsItem = {
   source: string;
   publishedAt: string;
   category: CategorySlug;
+  tags: string[];
   image?: string;
 };
 

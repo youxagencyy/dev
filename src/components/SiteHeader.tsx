@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { Search } from "lucide-react";
 import { CATEGORIES } from "@/lib/categories";
 import { formatToday } from "@/lib/format";
 
@@ -50,6 +51,18 @@ export function SiteHeader() {
             })}
           </ul>
         </nav>
+        <Link
+          href="/search"
+          aria-label="Пошук"
+          aria-current={section === "search" ? "page" : undefined}
+          className={`shrink-0 rounded-full p-2 transition-colors ${
+            section === "search"
+              ? "bg-zinc-950 text-white dark:bg-white dark:text-zinc-950"
+              : "text-zinc-600 hover:bg-black/5 hover:text-zinc-950 dark:text-zinc-400 dark:hover:bg-white/10 dark:hover:text-white"
+          }`}
+        >
+          <Search size={18} strokeWidth={1.75} aria-hidden="true" />
+        </Link>
         <p className="hidden shrink-0 text-xs text-zinc-500 lg:block" suppressHydrationWarning>
           {today}
         </p>

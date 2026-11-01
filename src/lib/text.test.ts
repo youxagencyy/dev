@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { dedupe } from "./text.ts";
 import {
   classify,
+  dedupe,
+  extractTags,
   isOffTopic,
   makeId,
   normalizeTitle,
@@ -128,6 +129,16 @@ describe("off topic", () => {
   });
 });
 
+describe("tags", () => {
+  it("picks up to three topics from the title", () => {
+    assert.deepEqual(extractTags("Дрони вдарили по енергетиці Харкова", ""), [
+      "Харків",
+      "Дрони",
+      "Енергетика",
+    ]);
+  });
+});
+
 describe("dedupe", () => {
   it("merges obvious repeats and does not require a source url", () => {
     const older: NewsItem = {
@@ -137,6 +148,7 @@ describe("dedupe", () => {
       source: "Укрінформ",
       publishedAt: "2026-10-31T10:00:00.000Z",
       category: "svit",
+      tags: ["США"],
       image: "https://example.com/photo.jpg",
     };
     const newer: NewsItem = {
@@ -146,6 +158,7 @@ describe("dedupe", () => {
       source: "Європейська правда",
       publishedAt: "2026-10-31T12:00:00.000Z",
       category: "svit",
+      tags: ["Переговори"],
     };
     const other: NewsItem = {
       id: "other",
@@ -154,6 +167,7 @@ describe("dedupe", () => {
       source: "Українська правда",
       publishedAt: "2026-10-31T11:00:00.000Z",
       category: "ukraina",
+      tags: ["Київ"],
     };
 
     const result = dedupe([older, newer, other]);
@@ -164,6 +178,7 @@ describe("dedupe", () => {
     assert.equal(merged?.image, "https://example.com/photo.jpg");
     assert.match(merged?.summary ?? "", /Трохи довший/);
     assert.equal("url" in (merged as NewsItem), false);
+    assert.deepEqual(new Set(merged?.tags), new Set(["США", "Переговори"]));
   });
 
   it("builds a stable id from the title alone", () => {

@@ -12,7 +12,7 @@
 npm install && npm run dev
 ```
 
-Відкрийте [http://localhost:3000](http://localhost:3000).
+Відкрийте [http://localhost:3000](http://localhost:3000). Пошук — на `/search`: збіги підсвічуються одразу, є фільтри розділу, тега й часу. На сторінці матеріалу — прогрес читання, вподобання на цьому пристрої, поширення посилання ВАРТИ і кнопка «Прослухати» через озвучення браузера. Посилання на сайт редакції не додається: достатньо назви видання.
 
 Стрічки читаються на сервері й кешуються на 10 хвилин. Ключ API не потрібен. Якщо якесь джерело не відповідає, сайт показує решту.
 
@@ -63,6 +63,6 @@ Public Ukrainian-language news digest. One command after Node 22:
 npm install && npm run dev
 ```
 
-Open http://localhost:3000. Headlines and short RSS excerpts only, cached for 10 minutes. A failed feed is skipped.
+Open http://localhost:3000. Headlines and short RSS excerpts only, cached for 10 minutes. A failed feed is skipped. Search lives at `/search`. Article pages can be read aloud with the browser Speech Synthesis API.
 
 Postgres is optional for the homepage. Schema and migration: `prisma/schema.prisma`, `prisma/migrations/20261101130000_init`. Apply with `npx prisma migrate deploy` after copying `.env.example` to `.env` and starting a local database on port 5432.
